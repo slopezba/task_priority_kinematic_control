@@ -1,0 +1,95 @@
+#include "task_priority_kinematic_control/tasks/joint_nominal_task.hpp"
+
+#include <pluginlib/class_list_macros.hpp>
+
+namespace task_priority_kinematic_control
+{
+
+void JointNominalTask::configure(
+  const std::string & id,
+  const std::string & plugin_name,
+  const std::map<std::string, rclcpp::Parameter> & parameters,
+  const TaskContext & context)
+{
+  configure_common(id, plugin_name, parameters, context);
+  joint_names_ = get_string_array_param(parameters, "joint_names", context.model->all_joint_names());
+  const auto target = get_double_array_param(parameters, "target", std::vector<double>(joint_names_.size(), 0.0));
+  const auto gains = get_double_array_param(parameters, "gain", std::vector<double>(joint_names_.size(), 0.3));
+  target_ = Eigen::VectorXd::Zero(joint_names_.size());
+  gains_ = Eigen::VectorXd::Constant(joint_names_.size(), 0.3);
+  for (size_t i = 0; i < joint_names_.size(); ++i) {
+    if (i < target.size()) {
+      target_(static_cast<Eigen::Index>(i)) = target[i];
+    }
+    if (i < gains.size()) {
+      gains_(static_cast<Eigen::Index>(i)) = gains[i];
+    }
+  }
+}
+
+TaskComputation JointNominalTask::update(
+  const WholeBodyState & state,
+  const KinematicsBackend &)
+{
+  TaskComputation computation;
+  computation.active = enabled_ && state.joint_positions.size() > 0;
+  if (!computation.active) {
+    computation.status_message = enabled_ ? "waiting_for_joints" : "disabled";
+    return computation;
+  }
+
+  computation.jacobian = Eigen::MatrixXd::Zero(joint_names_.size(), context_.model->total_dofs());
+  computation.error = Eigen::VectorXd::Zero(joint_names_.size());
+  computation.desired_velocity = Eigen::VectorXd::Zero(joint_names_.size());
+  for (size_t row = 0; row < joint_names_.size(); ++row) {
+    const int joint_idx = context_.model->joint_index(joint_names_[row]);
+    if (joint_idx < 0 || joint_idx >= state.joint_positions.size()) {
+      continue;
+    }
+    const Eigen::Index col = static_cast<Eigen::Index>(context_.model->base_dofs() + joint_idx);
+    computation.jacobian(static_cast<Eigen::Index>(row), col) = 1.0;
+    computation.error(static_cast<Eigen::Index>(row)) =
+      target_(static_cast<Eigen::Index>(row)) - state.joint_positions(joint_idx);
+    computation.desired_velocity(static_cast<Eigen::Index>(row)) =
+      gains_(static_cast<Eigen::Index>(row)) * computation.error(static_cast<Eigen::Index>(row));
+  }
+  computation.status_message = "tracking";
+  return computation;
+}
+
+bool JointNominalTask::set_joint_target(const std::vector<double> & target, std::string & message)
+{
+  if (target.size() != joint_names_.size()) {
+    message = "Joint target size does not match configured joint_names size";
+    return false;
+  }
+
+  for (size_t i = 0; i < target.size(); ++i) {
+    target_(static_cast<Eigen::Index>(i)) = target[i];
+  }
+  message = "Joint target updated";
+  return true;
+}
+
+msg::TaskStatus JointNominalTask::build_status() const
+{
+  auto status = TaskBaseCommon::build_status();
+  status.target_type = "joint_array";
+  status.joint_names = joint_names_;
+  return status;
+}
+
+std::vector<double> JointNominalTask::current_target() const
+{
+  std::vector<double> target(target_.size(), 0.0);
+  for (Eigen::Index i = 0; i < target_.size(); ++i) {
+    target[static_cast<size_t>(i)] = target_(i);
+  }
+  return target;
+}
+
+}  // namespace task_priority_kinematic_control
+
+PLUGINLIB_EXPORT_CLASS(
+  task_priority_kinematic_control::JointNominalTask,
+  task_priority_kinematic_control::TaskBase)

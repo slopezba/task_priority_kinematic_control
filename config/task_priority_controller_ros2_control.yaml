@@ -1,0 +1,100 @@
+controller_manager:
+  ros__parameters:
+    task_priority_controller:
+      type: task_priority_kinematic_control/TaskPriorityController
+
+task_priority_controller:
+  ros__parameters:
+    backend_plugin: task_priority_kinematic_control/KDLKinematicsBackend
+    robot_description: ""
+    robot_description_source_node: /robot_state_publisher_cirtesub
+    robot_description_wait_timeout_sec: 5.0
+    world_frame: world_ned
+    base_frame: cirtesub/base_link
+    left_tip_frame: cirtesub/alpha_left/standard_jaws_tool
+    right_tip_frame: cirtesub/alpha_right/standard_jaws_tool
+    left_arm_joints:
+      - cirtesub/alpha_left/axis_a
+      - cirtesub/alpha_left/axis_b
+      - cirtesub/alpha_left/axis_c
+      - cirtesub/alpha_left/axis_d
+      - cirtesub/alpha_left/axis_e
+    right_arm_joints:
+      - cirtesub/alpha_right/axis_a
+      - cirtesub/alpha_right/axis_b
+      - cirtesub/alpha_right/axis_c
+      - cirtesub/alpha_right/axis_d
+      - cirtesub/alpha_right/axis_e
+    active_base_dofs: [0, 1, 2, 3, 4, 5]
+    solver_method: dls
+    dls_lambda: 0.05
+    dof_weights: [1.0, 1.0, 1.0, 2.0, 2.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+    velocity_limits: [0.2, 0.2, 0.2, 0.3, 0.3, 0.3, 1.0, 1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.5]
+    navigator_topic: /cirtesub/navigator/navigation
+    body_velocity_controller_name: body_velocity_controller
+    left_arm_command_topic: /alpha_left_forward_velocity_controller/commands
+    right_arm_command_topic: /alpha_right_forward_velocity_controller/commands
+
+    task_ids:
+      - left_pose
+      - right_pose
+      - joint_limits
+      - left_arm_nominal
+      - right_arm_nominal
+      - base_yaw
+
+    tasks.left_pose.plugin: task_priority_kinematic_control/EndEffectorPoseTask
+    tasks.left_pose.enabled: true
+    tasks.left_pose.priority: 0.0
+    tasks.left_pose.group: left
+    tasks.left_pose.frame_id: cirtesub/alpha_left/standard_jaws_tool
+    tasks.left_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
+
+    tasks.right_pose.plugin: task_priority_kinematic_control/EndEffectorPoseTask
+    tasks.right_pose.enabled: true
+    tasks.right_pose.priority: 1.0
+    tasks.right_pose.group: right
+    tasks.right_pose.frame_id: cirtesub/alpha_right/standard_jaws_tool
+    tasks.right_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
+
+    tasks.joint_limits.plugin: task_priority_kinematic_control/JointLimitsTask
+    tasks.joint_limits.enabled: true
+    tasks.joint_limits.priority: 2.0
+    tasks.joint_limits.group: global
+    tasks.joint_limits.margin: 0.1
+    tasks.joint_limits.gain_scalar: 0.5
+    tasks.joint_limits.lower_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    tasks.joint_limits.upper_limits: [0.015, 3.22, 3.22, 3.49, 6.10, 0.015, 3.22, 3.22, 3.49, 6.10]
+
+    tasks.left_arm_nominal.plugin: task_priority_kinematic_control/JointNominalTask
+    tasks.left_arm_nominal.enabled: true
+    tasks.left_arm_nominal.priority: 3.0
+    tasks.left_arm_nominal.group: left
+    tasks.left_arm_nominal.joint_names:
+      - cirtesub/alpha_left/axis_a
+      - cirtesub/alpha_left/axis_b
+      - cirtesub/alpha_left/axis_c
+      - cirtesub/alpha_left/axis_d
+      - cirtesub/alpha_left/axis_e
+    tasks.left_arm_nominal.target: [0.0, 1.2, 1.2, 1.0, 0.0]
+    tasks.left_arm_nominal.gain: [0.2, 0.2, 0.2, 0.2, 0.2]
+
+    tasks.right_arm_nominal.plugin: task_priority_kinematic_control/JointNominalTask
+    tasks.right_arm_nominal.enabled: true
+    tasks.right_arm_nominal.priority: 4.0
+    tasks.right_arm_nominal.group: right
+    tasks.right_arm_nominal.joint_names:
+      - cirtesub/alpha_right/axis_a
+      - cirtesub/alpha_right/axis_b
+      - cirtesub/alpha_right/axis_c
+      - cirtesub/alpha_right/axis_d
+      - cirtesub/alpha_right/axis_e
+    tasks.right_arm_nominal.target: [0.0, 1.2, 1.2, 1.0, 0.0]
+    tasks.right_arm_nominal.gain: [0.2, 0.2, 0.2, 0.2, 0.2]
+
+    tasks.base_yaw.plugin: task_priority_kinematic_control/BaseYawTask
+    tasks.base_yaw.enabled: true
+    tasks.base_yaw.priority: 5.0
+    tasks.base_yaw.group: base
+    tasks.base_yaw.target_yaw: 0.0
+    tasks.base_yaw.gain_scalar: 0.5

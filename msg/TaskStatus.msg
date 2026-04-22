@@ -1,0 +1,11 @@
+string id
+string plugin
+string group
+uint32 priority
+bool enabled
+bool active
+string status_message
+float64[] error
+float64[] command
+string target_type
+string[] joint_names

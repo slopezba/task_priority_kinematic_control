@@ -1,0 +1,8 @@
+<library path="task_priority_kinematic_control">
+  <class
+    name="task_priority_kinematic_control/TaskPriorityController"
+    type="task_priority_kinematic_control::TaskPriorityController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>Whole-body task priority controller for CIRTESUB and dual Alpha.</description>
+  </class>
+</library>

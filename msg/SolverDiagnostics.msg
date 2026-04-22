@@ -1,0 +1,9 @@
+std_msgs/Header header
+string backend_name
+string solver_method
+float64 damped_least_squares_lambda
+float64 max_command_ratio
+float64 max_joint_ratio
+float64 condition_estimate
+bool state_valid
+string message

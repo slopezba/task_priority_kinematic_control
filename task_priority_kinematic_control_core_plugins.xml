@@ -1,0 +1,56 @@
+<library path="task_priority_kinematic_control">
+  <class
+    name="task_priority_kinematic_control/KDLKinematicsBackend"
+    type="task_priority_kinematic_control::KDLKinematicsBackend"
+    base_class_type="task_priority_kinematic_control::KinematicsBackend">
+    <description>KDL whole-body kinematics backend.</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/PinocchioKinematicsBackend"
+    type="task_priority_kinematic_control::PinocchioKinematicsBackend"
+    base_class_type="task_priority_kinematic_control::KinematicsBackend">
+    <description>Placeholder Pinocchio backend with the same interface as KDL.</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/EndEffectorPositionTask"
+    type="task_priority_kinematic_control::EndEffectorPositionTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Track the Cartesian position of an end-effector.</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/EndEffectorOrientationTask"
+    type="task_priority_kinematic_control::EndEffectorOrientationTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Track the orientation of an end-effector.</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/EndEffectorPoseTask"
+    type="task_priority_kinematic_control::EndEffectorPoseTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Track full pose of an end-effector.</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/FramePoseTask"
+    type="task_priority_kinematic_control::FramePoseTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Track full pose of an arbitrary frame, including the base frame.</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/JointNominalTask"
+    type="task_priority_kinematic_control::JointNominalTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Bias the solution toward a nominal joint configuration.</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/JointLimitsTask"
+    type="task_priority_kinematic_control::JointLimitsTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Repel joints from their limits.</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/BaseYawTask"
+    type="task_priority_kinematic_control::BaseYawTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Track a desired base yaw angle.</description>
+  </class>
+</library>
