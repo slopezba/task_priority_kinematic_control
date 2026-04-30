@@ -28,9 +28,9 @@ task_priority_runtime:
     rate_hz: 20.0
     navigator_topic: /cirtesub/navigator/navigation
     joint_states_topic: /cirtesub/alpha/joint_states
-    base_command_topic: /task_priority/base_cmd
-    left_arm_command_topic: /alpha_left_forward_velocity_controller/commands
-    right_arm_command_topic: /alpha_right_forward_velocity_controller/commands
+    base_command_topic: /cirtesub/controller/task_priority/base_cmd
+    left_arm_command_topic: /cirtesub/controller/alpha_left_forward_velocity_controller/commands
+    right_arm_command_topic: /cirtesub/controller/alpha_right_forward_velocity_controller/commands
 
     task_ids:
       - left_pose

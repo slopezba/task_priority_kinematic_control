@@ -31,9 +31,9 @@ task_priority_controller:
     dof_weights: [1.0, 1.0, 1.0, 2.0, 2.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
     velocity_limits: [0.2, 0.2, 0.2, 0.3, 0.3, 0.3, 1.0, 1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.5]
     navigator_topic: /cirtesub/navigator/navigation
-    body_velocity_controller_name: body_velocity_controller
-    left_arm_command_topic: /alpha_left_forward_velocity_controller/commands
-    right_arm_command_topic: /alpha_right_forward_velocity_controller/commands
+    body_velocity_controller_name: body_velocity
+    left_arm_command_topic: /cirtesub/controller/alpha_left_forward_velocity_controller/commands
+    right_arm_command_topic: /cirtesub/controller/alpha_right_forward_velocity_controller/commands
 
     task_ids:
       - left_pose

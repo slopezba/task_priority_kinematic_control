@@ -124,13 +124,13 @@ controller_interface::CallbackReturn TaskPriorityController::on_init()
     auto_declare_if_missing(this, "dof_weights", std::vector<double>{});
     auto_declare_if_missing(this, "velocity_limits", std::vector<double>{});
     auto_declare_if_missing(this, "navigator_topic", std::string("/cirtesub/navigator/navigation"));
-    auto_declare_if_missing(this, "body_velocity_controller_name", std::string("body_velocity_controller"));
+    auto_declare_if_missing(this, "body_velocity_controller_name", std::string("body_velocity"));
     auto_declare_if_missing(
       this, "left_arm_command_topic",
-      std::string("/alpha_left_forward_velocity_controller/commands"));
+      std::string("/cirtesub/controller/alpha_left_forward_velocity_controller/commands"));
     auto_declare_if_missing(
       this, "right_arm_command_topic",
-      std::string("/alpha_right_forward_velocity_controller/commands"));
+      std::string("/cirtesub/controller/alpha_right_forward_velocity_controller/commands"));
     auto_declare_if_missing(this, "task_ids", std::vector<std::string>{});
     declare_task_parameters();
   } catch (const std::exception & ex) {
@@ -167,7 +167,7 @@ TaskPriorityController::command_interface_configuration() const
 {
   const std::string body_velocity_name = get_node()->has_parameter("body_velocity_controller_name") ?
     get_node()->get_parameter("body_velocity_controller_name").as_string() :
-    std::string("body_velocity_controller");
+    std::string("body_velocity");
   std::vector<std::string> names = {
     body_velocity_name + "/linear.x",
     body_velocity_name + "/linear.y",
@@ -439,7 +439,7 @@ void TaskPriorityController::configure_external_interfaces()
         };
 
         task_joint_target_subs_[task_id] = get_node()->create_subscription<Float64MultiArray>(
-          "/task_priority_controller/tasks/" + task_id + "/joint_target",
+          "/cirtesub/controller/task_priority/tasks/" + task_id + "/joint_target",
           rclcpp::SystemDefaultsQoS(),
           joint_target_callback);
       }
@@ -463,7 +463,7 @@ void TaskPriorityController::configure_external_interfaces()
     };
 
     task_target_subs_[task_id] = get_node()->create_subscription<PoseStamped>(
-      "/task_priority_controller/tasks/" + task_id + "/target",
+      "/cirtesub/controller/task_priority/tasks/" + task_id + "/target",
       rclcpp::SystemDefaultsQoS(),
       pose_goal_callback);
   }

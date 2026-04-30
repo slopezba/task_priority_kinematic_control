@@ -119,9 +119,9 @@ void RuntimeNode::declare_parameters()
   declare_if_missing<double>(*this, "rate_hz", 20.0);
   declare_if_missing<std::string>(*this, "navigator_topic", "/cirtesub/navigator/navigation");
   declare_if_missing<std::string>(*this, "joint_states_topic", "/cirtesub/alpha/joint_states");
-  declare_if_missing<std::string>(*this, "base_command_topic", "/task_priority/base_cmd");
-  declare_if_missing<std::string>(*this, "left_arm_command_topic", "/alpha_left_forward_velocity_controller/commands");
-  declare_if_missing<std::string>(*this, "right_arm_command_topic", "/alpha_right_forward_velocity_controller/commands");
+  declare_if_missing<std::string>(*this, "base_command_topic", "/cirtesub/controller/task_priority/base_cmd");
+  declare_if_missing<std::string>(*this, "left_arm_command_topic", "/cirtesub/controller/alpha_left_forward_velocity_controller/commands");
+  declare_if_missing<std::string>(*this, "right_arm_command_topic", "/cirtesub/controller/alpha_right_forward_velocity_controller/commands");
   declare_if_missing<std::vector<std::string>>(*this, "task_ids", {});
 }
 
@@ -249,7 +249,7 @@ void RuntimeNode::configure_subscribers()
         const auto task_id = task->id();
         task_joint_target_subs_[task_id] =
           this->create_subscription<std_msgs::msg::Float64MultiArray>(
-          "/task_priority_controller/tasks/" + task_id + "/joint_target",
+          "/cirtesub/controller/task_priority/tasks/" + task_id + "/joint_target",
           10,
           [this, task_id](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
             if (!msg) {
@@ -271,7 +271,7 @@ void RuntimeNode::configure_subscribers()
 
     const auto task_id = task->id();
     task_target_subs_[task_id] = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/task_priority_controller/tasks/" + task_id + "/target",
+      "/cirtesub/controller/task_priority/tasks/" + task_id + "/target",
       10,
       [this, task_id](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         if (!msg) {
