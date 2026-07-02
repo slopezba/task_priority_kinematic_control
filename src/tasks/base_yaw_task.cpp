@@ -19,6 +19,17 @@ double wrap_angle(double angle)
   return angle;
 }
 
+Eigen::Isometry3d base_pose_from_state(const WholeBodyState & state)
+{
+  Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
+  pose.translation() = state.base_position;
+  const Eigen::AngleAxisd roll(state.base_rpy.x(), Eigen::Vector3d::UnitX());
+  const Eigen::AngleAxisd pitch(state.base_rpy.y(), Eigen::Vector3d::UnitY());
+  const Eigen::AngleAxisd yaw(state.base_rpy.z(), Eigen::Vector3d::UnitZ());
+  pose.linear() = (yaw * pitch * roll).toRotationMatrix();
+  return pose;
+}
+
 }  // namespace
 
 void BaseYawTask::configure(
@@ -44,6 +55,9 @@ TaskComputation BaseYawTask::update(
   }
 
   computation.jacobian = Eigen::MatrixXd::Zero(1, context_.model->total_dofs());
+  computation.has_frame_pose = true;
+  computation.frame_id = context_.model->base_frame();
+  computation.frame_pose = base_pose_from_state(state);
   const auto & base_dofs = context_.model->active_base_dofs();
   for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(base_dofs.size()); ++i) {
     if (base_dofs[static_cast<size_t>(i)] == 5) {

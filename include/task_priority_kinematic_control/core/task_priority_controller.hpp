@@ -4,6 +4,7 @@
 #include "task_priority_kinematic_control/core/task_manager.hpp"
 #include "task_priority_kinematic_control/core/whole_body_model.hpp"
 #include "task_priority_kinematic_control/kinematics/kinematics_backend.hpp"
+#include "task_priority_kinematic_control/msg/controller_output.hpp"
 #include "task_priority_kinematic_control/msg/hierarchy_state.hpp"
 #include "task_priority_kinematic_control/msg/task_state.hpp"
 #include "task_priority_kinematic_control/srv/list_tasks.hpp"
@@ -65,6 +66,7 @@ private:
   void configure_external_interfaces();
   void publish_hierarchy_state(const rclcpp::Time & time);
   void publish_task_states(const std::vector<TaskComputation> & task_outputs);
+  void publish_controller_output(const rclcpp::Time & time, const WholeBodyCommand & command);
   void refresh_task_manager();
   void reset_commands();
 
@@ -80,9 +82,8 @@ private:
   rclcpp::Subscription<NavigatorMsg>::SharedPtr navigator_sub_;
   std::map<std::string, rclcpp::Subscription<PoseStamped>::SharedPtr> task_target_subs_;
   std::map<std::string, rclcpp::Subscription<Float64MultiArray>::SharedPtr> task_joint_target_subs_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr left_arm_command_pub_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr right_arm_command_pub_;
   rclcpp::Publisher<msg::HierarchyState>::SharedPtr hierarchy_state_pub_;
+  rclcpp::Publisher<msg::ControllerOutput>::SharedPtr controller_output_pub_;
   std::map<std::string, rclcpp::Publisher<msg::TaskState>::SharedPtr> task_state_pubs_;
   rclcpp::Service<srv::ListTasks>::SharedPtr list_tasks_srv_;
   rclcpp::Service<srv::SetTaskEnabled>::SharedPtr set_task_enabled_srv_;
@@ -92,8 +93,6 @@ private:
 
   std::string backend_plugin_name_;
   std::string body_velocity_controller_name_;
-  std::string left_arm_command_topic_;
-  std::string right_arm_command_topic_;
   std::vector<std::string> left_arm_joints_;
   std::vector<std::string> right_arm_joints_;
   std::vector<std::string> task_ids_;

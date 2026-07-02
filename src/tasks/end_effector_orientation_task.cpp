@@ -45,6 +45,9 @@ TaskComputation EndEffectorOrientationTask::update(
   }
 
   const FrameState frame = backend.get_frame_state(frame_id_);
+  computation.has_frame_pose = true;
+  computation.frame_id = frame_id_;
+  computation.frame_pose = frame.pose;
   const Eigen::Quaterniond current(frame.pose.rotation());
   const Eigen::Quaterniond target = has_pose_goal_ ?
     Eigen::Quaterniond(

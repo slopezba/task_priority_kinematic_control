@@ -107,8 +107,8 @@ void RuntimeNode::declare_parameters()
   declare_if_missing<double>(*this, "robot_description_wait_timeout_sec", 3.0);
   declare_if_missing<std::string>(*this, "world_frame", "world_ned");
   declare_if_missing<std::string>(*this, "base_frame", "cirtesub/base_link");
-  declare_if_missing<std::string>(*this, "left_tip_frame", "cirtesub/alpha_left/link6");
-  declare_if_missing<std::string>(*this, "right_tip_frame", "cirtesub/alpha_right/link6");
+  declare_if_missing<std::string>(*this, "left_tip_frame", "cirtesub/alpha_left/ee_base_link");
+  declare_if_missing<std::string>(*this, "right_tip_frame", "cirtesub/alpha_right/ee_base_link");
   declare_if_missing<std::vector<std::string>>(*this, "left_arm_joints", {});
   declare_if_missing<std::vector<std::string>>(*this, "right_arm_joints", {});
   declare_if_missing<std::vector<int64_t>>(*this, "active_base_dofs", {0, 1, 2, 3, 4, 5});
@@ -249,7 +249,7 @@ void RuntimeNode::configure_subscribers()
         const auto task_id = task->id();
         task_joint_target_subs_[task_id] =
           this->create_subscription<std_msgs::msg::Float64MultiArray>(
-          "/cirtesub/controller/task_priority/tasks/" + task_id + "/joint_target",
+          "task_priority/tasks/" + task_id + "/joint_target",
           10,
           [this, task_id](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
             if (!msg) {
@@ -271,7 +271,7 @@ void RuntimeNode::configure_subscribers()
 
     const auto task_id = task->id();
     task_target_subs_[task_id] = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/cirtesub/controller/task_priority/tasks/" + task_id + "/target",
+      "task_priority/tasks/" + task_id + "/target",
       10,
       [this, task_id](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         if (!msg) {

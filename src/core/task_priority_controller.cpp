@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -68,6 +69,29 @@ std::string solver_method_name(SolverMethod method)
   }
 }
 
+geometry_msgs::msg::Pose pose_msg_from_isometry(const Eigen::Isometry3d & pose)
+{
+  geometry_msgs::msg::Pose msg;
+  msg.position.x = pose.translation().x();
+  msg.position.y = pose.translation().y();
+  msg.position.z = pose.translation().z();
+  const Eigen::Quaterniond q(pose.rotation());
+  msg.orientation.x = q.x();
+  msg.orientation.y = q.y();
+  msg.orientation.z = q.z();
+  msg.orientation.w = q.w();
+  return msg;
+}
+
+std::vector<double> vector_from_eigen(const Eigen::VectorXd & vector)
+{
+  std::vector<double> out(static_cast<size_t>(vector.size()), 0.0);
+  for (Eigen::Index i = 0; i < vector.size(); ++i) {
+    out[static_cast<size_t>(i)] = vector(i);
+  }
+  return out;
+}
+
 std::vector<int> parse_active_base_dofs(
   const std::vector<int64_t> & param_values,
   const rclcpp::Logger & logger)
@@ -101,6 +125,65 @@ std::vector<int> parse_active_base_dofs(
   return parsed_values;
 }
 
+void append_joint_velocity_interfaces(
+  const controller_interface::ControllerInterface * controller,
+  const std::string & parameter_name,
+  std::vector<std::string> & interface_names)
+{
+  if (!controller->get_node()->has_parameter(parameter_name)) {
+    return;
+  }
+
+  std::vector<std::string> joints;
+  if (!controller->get_node()->get_parameter(parameter_name, joints)) {
+    return;
+  }
+
+  for (const auto & joint : joints) {
+    if (joint.empty()) {
+      RCLCPP_WARN(
+        controller->get_node()->get_logger(),
+        "Ignoring empty joint name in '%s'",
+        parameter_name.c_str());
+      continue;
+    }
+
+    std::string interface_name;
+    interface_name.reserve(joint.size() + std::string("/velocity").size());
+    interface_name = joint;
+    interface_name += "/velocity";
+    interface_names.push_back(interface_name);
+  }
+}
+
+void append_joint_state_interfaces(
+  const controller_interface::ControllerInterface * controller,
+  const std::string & parameter_name,
+  const std::string & interface_type,
+  std::vector<std::string> & interface_names)
+{
+  if (!controller->get_node()->has_parameter(parameter_name)) {
+    return;
+  }
+
+  std::vector<std::string> joints;
+  if (!controller->get_node()->get_parameter(parameter_name, joints)) {
+    return;
+  }
+
+  for (const auto & joint : joints) {
+    if (joint.empty()) {
+      RCLCPP_WARN(
+        controller->get_node()->get_logger(),
+        "Ignoring empty joint name in '%s'",
+        parameter_name.c_str());
+      continue;
+    }
+
+    interface_names.push_back(joint + "/" + interface_type);
+  }
+}
+
 }  // namespace
 
 controller_interface::CallbackReturn TaskPriorityController::on_init()
@@ -114,8 +197,8 @@ controller_interface::CallbackReturn TaskPriorityController::on_init()
     auto_declare_if_missing(this, "robot_description_wait_timeout_sec", 3.0);
     auto_declare_if_missing(this, "world_frame", std::string("world_ned"));
     auto_declare_if_missing(this, "base_frame", std::string("cirtesub/base_link"));
-    auto_declare_if_missing(this, "left_tip_frame", std::string("cirtesub/alpha_left/standard_jaws_tool"));
-    auto_declare_if_missing(this, "right_tip_frame", std::string("cirtesub/alpha_right/standard_jaws_tool"));
+    auto_declare_if_missing(this, "left_tip_frame", std::string("cirtesub/alpha_left/ee_base_link"));
+    auto_declare_if_missing(this, "right_tip_frame", std::string("cirtesub/alpha_right/ee_base_link"));
     auto_declare_if_missing(this, "left_arm_joints", std::vector<std::string>{});
     auto_declare_if_missing(this, "right_arm_joints", std::vector<std::string>{});
     auto_declare_if_missing(this, "active_base_dofs", std::vector<int64_t>{0, 1, 2, 3, 4, 5});
@@ -125,12 +208,6 @@ controller_interface::CallbackReturn TaskPriorityController::on_init()
     auto_declare_if_missing(this, "velocity_limits", std::vector<double>{});
     auto_declare_if_missing(this, "navigator_topic", std::string("/cirtesub/navigator/navigation"));
     auto_declare_if_missing(this, "body_velocity_controller_name", std::string("body_velocity"));
-    auto_declare_if_missing(
-      this, "left_arm_command_topic",
-      std::string("/cirtesub/controller/alpha_left_forward_velocity_controller/commands"));
-    auto_declare_if_missing(
-      this, "right_arm_command_topic",
-      std::string("/cirtesub/controller/alpha_right_forward_velocity_controller/commands"));
     auto_declare_if_missing(this, "task_ids", std::vector<std::string>{});
     declare_task_parameters();
   } catch (const std::exception & ex) {
@@ -177,6 +254,16 @@ TaskPriorityController::command_interface_configuration() const
     body_velocity_name + "/angular.z"
   };
 
+  try {
+    append_joint_velocity_interfaces(this, "left_arm_joints", names);
+    append_joint_velocity_interfaces(this, "right_arm_joints", names);
+  } catch (const std::exception & ex) {
+    RCLCPP_ERROR(
+      get_node()->get_logger(),
+      "Failed to build TaskPriorityController command interface list: %s",
+      ex.what());
+  }
+
   return {
     controller_interface::interface_configuration_type::INDIVIDUAL,
     names
@@ -186,22 +273,11 @@ TaskPriorityController::command_interface_configuration() const
 controller_interface::InterfaceConfiguration
 TaskPriorityController::state_interface_configuration() const
 {
-  const auto left_joints = get_node()->has_parameter("left_arm_joints") ?
-    get_node()->get_parameter("left_arm_joints").as_string_array() :
-    std::vector<std::string>{};
-  const auto right_joints = get_node()->has_parameter("right_arm_joints") ?
-    get_node()->get_parameter("right_arm_joints").as_string_array() :
-    std::vector<std::string>{};
   std::vector<std::string> names;
-  names.reserve((left_joints.size() + right_joints.size()) * 2U);
-  for (const auto & joint : left_joints) {
-    names.push_back(joint + "/position");
-    names.push_back(joint + "/velocity");
-  }
-  for (const auto & joint : right_joints) {
-    names.push_back(joint + "/position");
-    names.push_back(joint + "/velocity");
-  }
+  append_joint_state_interfaces(this, "left_arm_joints", "position", names);
+  append_joint_state_interfaces(this, "right_arm_joints", "position", names);
+  append_joint_state_interfaces(this, "left_arm_joints", "velocity", names);
+  append_joint_state_interfaces(this, "right_arm_joints", "velocity", names);
 
   return {
     controller_interface::interface_configuration_type::INDIVIDUAL,
@@ -218,8 +294,6 @@ controller_interface::CallbackReturn TaskPriorityController::on_configure(
   backend_plugin_name_ = get_node()->get_parameter("backend_plugin").as_string();
   body_velocity_controller_name_ =
     get_node()->get_parameter("body_velocity_controller_name").as_string();
-  left_arm_command_topic_ = get_node()->get_parameter("left_arm_command_topic").as_string();
-  right_arm_command_topic_ = get_node()->get_parameter("right_arm_command_topic").as_string();
   left_arm_joints_ = get_node()->get_parameter("left_arm_joints").as_string_array();
   right_arm_joints_ = get_node()->get_parameter("right_arm_joints").as_string_array();
   task_ids_ = get_node()->get_parameter("task_ids").as_string_array();
@@ -267,10 +341,6 @@ controller_interface::CallbackReturn TaskPriorityController::on_configure(
     {
       navigator_buffer_.writeFromNonRT(msg);
     });
-  left_arm_command_pub_ = get_node()->create_publisher<std_msgs::msg::Float64MultiArray>(
-    left_arm_command_topic_, rclcpp::SystemDefaultsQoS());
-  right_arm_command_pub_ = get_node()->create_publisher<std_msgs::msg::Float64MultiArray>(
-    right_arm_command_topic_, rclcpp::SystemDefaultsQoS());
   configure_external_interfaces();
 
   RCLCPP_INFO(get_node()->get_logger(), "Configured TaskPriorityController");
@@ -366,6 +436,8 @@ void TaskPriorityController::configure_external_interfaces()
 {
   hierarchy_state_pub_ = get_node()->create_publisher<msg::HierarchyState>(
     "/hierarchy_state", rclcpp::SystemDefaultsQoS());
+  controller_output_pub_ = get_node()->create_publisher<msg::ControllerOutput>(
+    "task_priority/output", rclcpp::SystemDefaultsQoS());
 
   list_tasks_srv_ = get_node()->create_service<srv::ListTasks>(
     "/list_tasks",
@@ -418,7 +490,7 @@ void TaskPriorityController::configure_external_interfaces()
   for (const auto & task : task_manager_->tasks()) {
     const auto & task_id = task->id();
     task_state_pubs_[task_id] = get_node()->create_publisher<msg::TaskState>(
-      "tasks/" + task_id + "/state", rclcpp::SystemDefaultsQoS());
+      "task_priority/tasks/" + task_id + "/state", rclcpp::SystemDefaultsQoS());
 
     if (task->plugin_name().find("PoseTask") == std::string::npos) {
       if (task->plugin_name().find("JointNominalTask") != std::string::npos) {
@@ -439,7 +511,7 @@ void TaskPriorityController::configure_external_interfaces()
         };
 
         task_joint_target_subs_[task_id] = get_node()->create_subscription<Float64MultiArray>(
-          "/cirtesub/controller/task_priority/tasks/" + task_id + "/joint_target",
+          "task_priority/tasks/" + task_id + "/joint_target",
           rclcpp::SystemDefaultsQoS(),
           joint_target_callback);
       }
@@ -463,7 +535,7 @@ void TaskPriorityController::configure_external_interfaces()
     };
 
     task_target_subs_[task_id] = get_node()->create_subscription<PoseStamped>(
-      "/cirtesub/controller/task_priority/tasks/" + task_id + "/target",
+      "task_priority/tasks/" + task_id + "/target",
       rclcpp::SystemDefaultsQoS(),
       pose_goal_callback);
   }
@@ -501,6 +573,11 @@ void TaskPriorityController::publish_task_states(const std::vector<TaskComputati
     state_msg.type = tasks[i]->plugin_name();
     state_msg.enabled = tasks[i]->enabled();
     state_msg.active = task_outputs[i].active;
+    state_msg.has_frame_pose = task_outputs[i].has_frame_pose;
+    state_msg.frame_id = task_outputs[i].frame_id;
+    if (task_outputs[i].has_frame_pose) {
+      state_msg.frame_pose = pose_msg_from_isometry(task_outputs[i].frame_pose);
+    }
     state_msg.feedforward.clear();
 
     const auto & error = task_outputs[i].error;
@@ -518,6 +595,67 @@ void TaskPriorityController::publish_task_states(const std::vector<TaskComputati
     state_msg.target = tasks[i]->current_target();
     pub_it->second->publish(state_msg);
   }
+}
+
+void TaskPriorityController::publish_controller_output(
+  const rclcpp::Time & time,
+  const WholeBodyCommand & command)
+{
+  if (!controller_output_pub_) {
+    return;
+  }
+
+  msg::ControllerOutput output_msg;
+  output_msg.header.stamp = time;
+  output_msg.header.frame_id = get_node()->get_parameter("world_frame").as_string();
+
+  for (const auto dof : active_base_dofs_) {
+    output_msg.generalized_velocity_names.push_back(base_dof_name(dof));
+  }
+  for (const auto & joint : left_arm_joints_) {
+    output_msg.generalized_velocity_names.push_back(joint);
+  }
+  for (const auto & joint : right_arm_joints_) {
+    output_msg.generalized_velocity_names.push_back(joint);
+  }
+  output_msg.generalized_velocity = vector_from_eigen(command.generalized_velocity);
+
+  output_msg.base_velocity_names = {
+    "base.linear.x",
+    "base.linear.y",
+    "base.linear.z",
+    "base.angular.x",
+    "base.angular.y",
+    "base.angular.z"
+  };
+  output_msg.base_velocity.assign(6, 0.0);
+  for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(active_base_dofs_.size()) &&
+       i < command.generalized_velocity.size(); ++i) {
+    const int dof = active_base_dofs_[static_cast<size_t>(i)];
+    if (dof >= 0 && dof < 6) {
+      output_msg.base_velocity[static_cast<size_t>(dof)] = command.generalized_velocity(i);
+    }
+  }
+
+  output_msg.left_joint_names = left_arm_joints_;
+  output_msg.left_arm_velocity.assign(left_arm_joints_.size(), 0.0);
+  const Eigen::Index left_offset = static_cast<Eigen::Index>(model_->left_offset());
+  for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(left_arm_joints_.size()) &&
+       left_offset + i < command.generalized_velocity.size(); ++i) {
+    output_msg.left_arm_velocity[static_cast<size_t>(i)] =
+      command.generalized_velocity(left_offset + i);
+  }
+
+  output_msg.right_joint_names = right_arm_joints_;
+  output_msg.right_arm_velocity.assign(right_arm_joints_.size(), 0.0);
+  const Eigen::Index right_offset = static_cast<Eigen::Index>(model_->right_offset());
+  for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(right_arm_joints_.size()) &&
+       right_offset + i < command.generalized_velocity.size(); ++i) {
+    output_msg.right_arm_velocity[static_cast<size_t>(i)] =
+      command.generalized_velocity(right_offset + i);
+  }
+
+  controller_output_pub_->publish(output_msg);
 }
 
 controller_interface::CallbackReturn TaskPriorityController::on_activate(
@@ -539,27 +677,20 @@ void TaskPriorityController::reset_commands()
   for (auto & interface : command_interfaces_) {
     interface.set_value(0.0);
   }
-
-  if (left_arm_command_pub_) {
-    std_msgs::msg::Float64MultiArray left_msg;
-    left_msg.data.assign(left_arm_joints_.size(), 0.0);
-    left_arm_command_pub_->publish(left_msg);
-  }
-  if (right_arm_command_pub_) {
-    std_msgs::msg::Float64MultiArray right_msg;
-    right_msg.data.assign(right_arm_joints_.size(), 0.0);
-    right_arm_command_pub_->publish(right_msg);
-  }
 }
 
 controller_interface::return_type TaskPriorityController::update(
   const rclcpp::Time & time,
   const rclcpp::Duration &)
 {
-  if (command_interfaces_.size() != 6U) {
+  const size_t expected_command_interface_count =
+    6U + left_arm_joints_.size() + right_arm_joints_.size();
+  if (command_interfaces_.size() != expected_command_interface_count) {
     RCLCPP_ERROR_THROTTLE(
       get_node()->get_logger(), *get_node()->get_clock(), 2000,
-      "Unexpected command interface count: %zu", command_interfaces_.size());
+      "Unexpected command interface count: %zu (expected %zu)",
+      command_interfaces_.size(),
+      expected_command_interface_count);
     return controller_interface::return_type::ERROR;
   }
 
@@ -576,13 +707,34 @@ controller_interface::return_type TaskPriorityController::update(
   state_.base_rpy = Eigen::Vector3d((*navigator_msg)->rpy.x, (*navigator_msg)->rpy.y, (*navigator_msg)->rpy.z);
   state_.navigation_valid = true;
 
-  const Eigen::Index joint_count = static_cast<Eigen::Index>(left_arm_joints_.size() + right_arm_joints_.size());
+  const auto all_joints = model_->all_joint_names();
+  const Eigen::Index joint_count = static_cast<Eigen::Index>(all_joints.size());
+  const size_t expected_state_interface_count = all_joints.size() * 2U;
+  if (state_interfaces_.size() != expected_state_interface_count) {
+    RCLCPP_ERROR_THROTTLE(
+      get_node()->get_logger(), *get_node()->get_clock(), 2000,
+      "Unexpected state interface count: %zu (expected %zu)",
+      state_interfaces_.size(),
+      expected_state_interface_count);
+    reset_commands();
+    return controller_interface::return_type::ERROR;
+  }
+
   state_.joint_positions = Eigen::VectorXd::Zero(joint_count);
   state_.joint_velocities = Eigen::VectorXd::Zero(joint_count);
-  for (Eigen::Index i = 0; i < joint_count; ++i) {
-    const Eigen::Index state_offset = i * 2;
-    state_.joint_positions(i) = state_interfaces_[state_offset].get_value();
-    state_.joint_velocities(i) = state_interfaces_[state_offset + 1].get_value();
+  for (size_t i = 0; i < all_joints.size(); ++i) {
+    const double position = state_interfaces_[i].get_value();
+    const double velocity = state_interfaces_[all_joints.size() + i].get_value();
+    if (!std::isfinite(position) || !std::isfinite(velocity)) {
+      RCLCPP_WARN_THROTTLE(
+        get_node()->get_logger(), *get_node()->get_clock(), 2000,
+        "State interface has non-finite value for joint '%s'",
+        all_joints[i].c_str());
+      reset_commands();
+      return controller_interface::return_type::OK;
+    }
+    state_.joint_positions(static_cast<Eigen::Index>(i)) = position;
+    state_.joint_velocities(static_cast<Eigen::Index>(i)) = velocity;
   }
   state_.joints_valid = true;
 
@@ -611,23 +763,19 @@ controller_interface::return_type TaskPriorityController::update(
 
   const Eigen::Index left_offset = static_cast<Eigen::Index>(model_->left_offset());
   const Eigen::Index right_offset = static_cast<Eigen::Index>(model_->right_offset());
-  std_msgs::msg::Float64MultiArray left_msg;
-  left_msg.data.resize(left_arm_joints_.size(), 0.0);
+  size_t command_interface_index = 6U;
   for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(left_arm_joints_.size()); ++i) {
-    left_msg.data[static_cast<size_t>(i)] = command.generalized_velocity(left_offset + i);
+    command_interfaces_[command_interface_index].set_value(
+      command.generalized_velocity(left_offset + i));
+    ++command_interface_index;
   }
-  std_msgs::msg::Float64MultiArray right_msg;
-  right_msg.data.resize(right_arm_joints_.size(), 0.0);
   for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(right_arm_joints_.size()); ++i) {
-    right_msg.data[static_cast<size_t>(i)] = command.generalized_velocity(right_offset + i);
+    command_interfaces_[command_interface_index].set_value(
+      command.generalized_velocity(right_offset + i));
+    ++command_interface_index;
   }
 
-  if (left_arm_command_pub_) {
-    left_arm_command_pub_->publish(left_msg);
-  }
-  if (right_arm_command_pub_) {
-    right_arm_command_pub_->publish(right_msg);
-  }
+  publish_controller_output(time, command);
 
   return controller_interface::return_type::OK;
 }

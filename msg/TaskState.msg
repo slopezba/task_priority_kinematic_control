@@ -2,6 +2,9 @@ string id
 string type
 bool enabled
 bool active
+bool has_frame_pose
+string frame_id
+geometry_msgs/Pose frame_pose
 float64[] target
 float64[] feedforward
 float64[] error

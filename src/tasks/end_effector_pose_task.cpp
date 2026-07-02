@@ -45,6 +45,9 @@ TaskComputation EndEffectorPoseTask::update(
   }
 
   const FrameState frame = backend.get_frame_state(frame_id_);
+  computation.has_frame_pose = true;
+  computation.frame_id = frame_id_;
+  computation.frame_pose = frame.pose;
   Eigen::Matrix<double, 6, 1> error = Eigen::Matrix<double, 6, 1>::Zero();
   const Eigen::Vector3d target_pos = has_pose_goal_ ?
     Eigen::Vector3d(

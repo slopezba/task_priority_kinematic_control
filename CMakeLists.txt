@@ -23,6 +23,7 @@ find_package(sura_msgs REQUIRED)
 find_package(urdf REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/ControllerOutput.msg"
   "msg/TaskState.msg"
   "msg/TaskStatus.msg"
   "msg/HierarchyState.msg"

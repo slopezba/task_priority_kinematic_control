@@ -3,8 +3,6 @@
 #include "task_priority_kinematic_control/kinematics/kinematics_backend.hpp"
 
 #include <kdl/chain.hpp>
-#include <kdl/chainfksolverpos_recursive.hpp>
-#include <kdl/chainjnttojacsolver.hpp>
 #include <kdl/tree.hpp>
 
 #include <memory>
@@ -36,21 +34,18 @@ private:
   {
     KDL::Chain chain;
     std::vector<std::string> joint_names;
-    std::unique_ptr<KDL::ChainFkSolverPos_recursive> fk_solver;
-    std::unique_ptr<KDL::ChainJntToJacSolver> jac_solver;
   };
 
   static Eigen::Isometry3d to_isometry(const KDL::Frame & frame);
-  static Eigen::MatrixXd to_eigen(const KDL::Jacobian & jacobian);
   ChainData build_chain_data(
     const KDL::Tree & tree,
     const std::string & base_frame,
     const std::string & tip_frame) const;
   Eigen::VectorXd q_for_chain(const ChainData & chain, const WholeBodyState & state) const;
   FrameState compute_frame_state(
+    const std::string & frame_id,
     const ChainData & chain,
-    const WholeBodyState & state,
-    const std::string & group_name) const;
+    const WholeBodyState & state) const;
 
   WholeBodyModel model_;
   rclcpp::Logger logger_ = rclcpp::get_logger("KDLKinematicsBackend");

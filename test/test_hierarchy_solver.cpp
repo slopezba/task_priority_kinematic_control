@@ -10,7 +10,7 @@ TEST(HierarchySolver, SolvesSingleTask)
 {
   HierarchySolver solver;
   solver.configure(2);
-  solver.set_method(SolverMethod::kDls);
+  solver.set_method(SolverMethod::kPinv);
 
   TaskComputation task;
   task.active = true;

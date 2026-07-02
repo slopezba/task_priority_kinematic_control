@@ -46,7 +46,10 @@ struct TaskComputation
   Eigen::MatrixXd jacobian;
   Eigen::VectorXd desired_velocity;
   Eigen::VectorXd error;
+  Eigen::Isometry3d frame_pose = Eigen::Isometry3d::Identity();
   bool active = false;
+  bool has_frame_pose = false;
+  std::string frame_id;
   std::string status_message;
 };
 

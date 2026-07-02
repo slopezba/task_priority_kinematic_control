@@ -1,0 +1,9 @@
+std_msgs/Header header
+string[] generalized_velocity_names
+float64[] generalized_velocity
+string[] base_velocity_names
+float64[] base_velocity
+string[] left_joint_names
+float64[] left_arm_velocity
+string[] right_joint_names
+float64[] right_arm_velocity

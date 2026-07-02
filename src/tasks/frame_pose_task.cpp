@@ -78,6 +78,9 @@ TaskComputation FramePoseTask::update(
     current_pose = frame.pose;
     jacobian = frame.jacobian;
   }
+  computation.has_frame_pose = true;
+  computation.frame_id = frame_id_;
+  computation.frame_pose = current_pose;
 
   Eigen::Matrix<double, 6, 1> error = Eigen::Matrix<double, 6, 1>::Zero();
   const Eigen::Vector3d target_pos = has_pose_goal_ ?
