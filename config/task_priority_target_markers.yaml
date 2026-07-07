@@ -1,0 +1,8 @@
+/task_priority_target_markers:
+  ros__parameters:
+    marker_scale: 0.45
+    base_marker_scale: 0.8
+    end_effector_marker_scale: 0.10
+    base_visual_scale: 1.0
+    end_effector_visual_scale: 1.0
+    fallback_sphere_scale: 0.18

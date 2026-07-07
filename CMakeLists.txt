@@ -11,6 +11,7 @@ find_package(Eigen3 REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(Threads REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(interactive_markers REQUIRED)
 find_package(kdl_parser REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -21,6 +22,7 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(sura_msgs REQUIRED)
 find_package(urdf REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ControllerOutput.msg"
@@ -89,11 +91,19 @@ add_executable(task_priority_runtime src/main.cpp)
 target_link_libraries(task_priority_runtime ${core_target})
 ament_target_dependencies(task_priority_runtime rclcpp)
 
+add_executable(task_priority_target_markers src/task_priority_target_markers.cpp)
+ament_target_dependencies(task_priority_target_markers
+  geometry_msgs
+  interactive_markers
+  rclcpp
+  visualization_msgs
+)
+
 pluginlib_export_plugin_description_file(controller_interface task_priority_kinematic_control_plugins.xml)
 pluginlib_export_plugin_description_file(task_priority_kinematic_control task_priority_kinematic_control_core_plugins.xml)
 
 install(
-  TARGETS ${core_target} task_priority_runtime
+  TARGETS ${core_target} task_priority_runtime task_priority_target_markers
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -122,6 +132,7 @@ ament_export_dependencies(
   controller_interface
   geometry_msgs
   hardware_interface
+  interactive_markers
   kdl_parser
   pluginlib
   rclcpp
@@ -131,6 +142,7 @@ ament_export_dependencies(
   std_srvs
   sura_msgs
   urdf
+  visualization_msgs
   rosidl_default_runtime
 )
 
