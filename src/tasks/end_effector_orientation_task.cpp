@@ -64,6 +64,23 @@ TaskComputation EndEffectorOrientationTask::update(
   return computation;
 }
 
+bool EndEffectorOrientationTask::set_gain(const std::vector<double> & gain, std::string & message)
+{
+  if (gain.size() != 3) {
+    message = "Orientation gain must contain 3 values";
+    return false;
+  }
+  for (size_t i = 0; i < gain.size(); ++i) {
+    if (gain[i] < 0.0) {
+      message = "Orientation gain values must be non-negative";
+      return false;
+    }
+    gains_(static_cast<Eigen::Index>(i)) = gain[i];
+  }
+  message = "Orientation gain updated";
+  return true;
+}
+
 }  // namespace task_priority_kinematic_control
 
 PLUGINLIB_EXPORT_CLASS(

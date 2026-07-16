@@ -108,6 +108,23 @@ TaskComputation FramePoseTask::update(
   return computation;
 }
 
+bool FramePoseTask::set_gain(const std::vector<double> & gain, std::string & message)
+{
+  if (gain.size() != 6) {
+    message = "Frame pose gain must contain 6 values";
+    return false;
+  }
+  for (size_t i = 0; i < gain.size(); ++i) {
+    if (gain[i] < 0.0) {
+      message = "Frame pose gain values must be non-negative";
+      return false;
+    }
+    gains_(static_cast<Eigen::Index>(i)) = gain[i];
+  }
+  message = "Frame pose gain updated";
+  return true;
+}
+
 }  // namespace task_priority_kinematic_control
 
 PLUGINLIB_EXPORT_CLASS(

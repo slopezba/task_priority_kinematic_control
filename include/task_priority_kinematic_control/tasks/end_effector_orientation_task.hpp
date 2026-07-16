@@ -18,6 +18,8 @@ public:
     const WholeBodyState & state,
     const KinematicsBackend & backend) override;
 
+  bool set_gain(const std::vector<double> & gain, std::string & message) override;
+
 protected:
   std::string frame_id_;
   Eigen::Vector3d gains_ = Eigen::Vector3d::Ones();

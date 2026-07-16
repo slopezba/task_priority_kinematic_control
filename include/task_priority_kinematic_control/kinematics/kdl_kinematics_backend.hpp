@@ -27,6 +27,8 @@ public:
     const std::string & from_frame,
     const std::string & to_frame) const override;
 
+  const std::vector<CollisionCapsule> & collision_capsules() const override;
+
   std::string name() const override;
 
 private:
@@ -46,6 +48,7 @@ private:
     const std::string & frame_id,
     const ChainData & chain,
     const WholeBodyState & state) const;
+  void parse_collision_capsules(const std::string & robot_description);
 
   WholeBodyModel model_;
   rclcpp::Logger logger_ = rclcpp::get_logger("KDLKinematicsBackend");
@@ -53,6 +56,7 @@ private:
   KDL::Tree tree_;
   std::unordered_map<std::string, ChainData> chains_;
   std::unordered_map<std::string, FrameState> cached_frames_;
+  std::vector<CollisionCapsule> collision_capsules_;
 };
 
 }  // namespace task_priority_kinematic_control

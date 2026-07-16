@@ -71,6 +71,24 @@ bool JointNominalTask::set_joint_target(const std::vector<double> & target, std:
   return true;
 }
 
+bool JointNominalTask::set_gain(const std::vector<double> & gain, std::string & message)
+{
+  if (gain.size() != joint_names_.size()) {
+    message = "Joint gain size does not match configured joint_names size";
+    return false;
+  }
+
+  for (size_t i = 0; i < gain.size(); ++i) {
+    if (gain[i] < 0.0) {
+      message = "Joint gain values must be non-negative";
+      return false;
+    }
+    gains_(static_cast<Eigen::Index>(i)) = gain[i];
+  }
+  message = "Joint gain updated";
+  return true;
+}
+
 msg::TaskStatus JointNominalTask::build_status() const
 {
   auto status = TaskBaseCommon::build_status();

@@ -6,6 +6,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(controller_interface REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(hardware_interface REQUIRED)
@@ -56,6 +57,7 @@ add_library(${core_target} SHARED
   src/tasks/joint_nominal_task.cpp
   src/tasks/joint_limits_task.cpp
   src/tasks/base_yaw_task.cpp
+  src/tasks/self_collision_avoidance_task.cpp
 )
 
 set_target_properties(${core_target} PROPERTIES OUTPUT_NAME ${PROJECT_NAME})
@@ -71,6 +73,7 @@ target_link_libraries(${core_target}
 
 ament_target_dependencies(${core_target}
   controller_interface
+  ament_index_cpp
   geometry_msgs
   hardware_interface
   kdl_parser
@@ -130,6 +133,7 @@ install(
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   controller_interface
+  ament_index_cpp
   geometry_msgs
   hardware_interface
   interactive_markers

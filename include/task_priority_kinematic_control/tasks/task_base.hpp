@@ -36,6 +36,8 @@ public:
 
   virtual bool set_pose_goal(const geometry_msgs::msg::PoseStamped & goal);
   virtual bool set_joint_target(const std::vector<double> & target, std::string & message);
+  virtual bool set_gain(const std::vector<double> & gain, std::string & message);
+  virtual bool set_gain_scalar(double gain, std::string & message);
   virtual bool set_enabled(bool enabled);
   virtual void reset();
   virtual msg::TaskStatus build_status() const = 0;
@@ -54,6 +56,8 @@ class TaskBaseCommon : public TaskBase
 public:
   bool set_pose_goal(const geometry_msgs::msg::PoseStamped & goal) override;
   bool set_joint_target(const std::vector<double> & target, std::string & message) override;
+  bool set_gain(const std::vector<double> & gain, std::string & message) override;
+  bool set_gain_scalar(double gain, std::string & message) override;
   bool set_enabled(bool enabled) override;
   void reset() override;
   msg::TaskStatus build_status() const override;

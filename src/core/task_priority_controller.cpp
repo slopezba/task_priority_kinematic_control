@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -92,6 +93,33 @@ std::vector<double> vector_from_eigen(const Eigen::VectorXd & vector)
   return out;
 }
 
+bool split_task_parameter_name(
+  const std::string & name,
+  std::string & task_id,
+  std::string & field)
+{
+  const std::string prefix = "tasks.";
+  if (name.rfind(prefix, 0) != 0) {
+    return false;
+  }
+
+  const auto field_separator = name.rfind('.');
+  if (field_separator == std::string::npos || field_separator <= prefix.size()) {
+    return false;
+  }
+
+  task_id = name.substr(prefix.size(), field_separator - prefix.size());
+  field = name.substr(field_separator + 1);
+  return !task_id.empty() && !field.empty();
+}
+
+bool values_are_non_negative(const std::vector<double> & values)
+{
+  return std::all_of(values.begin(), values.end(), [](double value) {
+    return value >= 0.0;
+  });
+}
+
 std::vector<int> parse_active_base_dofs(
   const std::vector<int64_t> & param_values,
   const rclcpp::Logger & logger)
@@ -123,6 +151,36 @@ std::vector<int> parse_active_base_dofs(
     values_stream.str().c_str());
 
   return parsed_values;
+}
+
+bool validate_positive_vector_parameter(
+  const std::string & name,
+  const std::vector<double> & values,
+  size_t expected_size,
+  std::string & reason)
+{
+  if (values.size() != expected_size) {
+    reason = name + " must contain " + std::to_string(expected_size) +
+      " values, got " + std::to_string(values.size());
+    return false;
+  }
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (values[i] <= 0.0 || !std::isfinite(values[i])) {
+      reason = name + " values must be finite and positive; invalid value at index " +
+        std::to_string(i);
+      return false;
+    }
+  }
+  return true;
+}
+
+Eigen::VectorXd eigen_vector_from_std(const std::vector<double> & values)
+{
+  Eigen::VectorXd vector(values.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    vector(static_cast<Eigen::Index>(i)) = values[i];
+  }
+  return vector;
 }
 
 void append_joint_velocity_interfaces(
@@ -233,6 +291,12 @@ void TaskPriorityController::declare_task_parameters()
     auto_declare_if_missing(this, prefix + "upper_limits", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "margin", 0.1);
     auto_declare_if_missing(this, prefix + "gain_scalar", 0.5);
+    auto_declare_if_missing(this, prefix + "safe_distance", 0.05);
+    auto_declare_if_missing(this, prefix + "activation_distance", 0.12);
+    auto_declare_if_missing(this, prefix + "max_repulsive_velocity", 0.08);
+    auto_declare_if_missing(this, prefix + "check_adjacent_links", false);
+    auto_declare_if_missing(this, prefix + "include_link_substrings", std::vector<std::string>{});
+    auto_declare_if_missing(this, prefix + "exclude_link_substrings", std::vector<std::string>{});
     auto_declare_if_missing(this, prefix + "joint_names", std::vector<std::string>{});
     auto_declare_if_missing(this, prefix + "target", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "target_yaw", 0.0);
@@ -307,6 +371,8 @@ controller_interface::CallbackReturn TaskPriorityController::on_configure(
     "task_priority_kinematic_control", "task_priority_kinematic_control::KinematicsBackend");
   rebuild_backend();
   configure_solver();
+  param_callback_handle_ = get_node()->add_on_set_parameters_callback(
+    std::bind(&TaskPriorityController::on_parameters_set, this, std::placeholders::_1));
   refresh_task_manager();
   RCLCPP_INFO(
     get_node()->get_logger(),
@@ -408,20 +474,28 @@ void TaskPriorityController::configure_solver()
 
   const auto weights = get_node()->get_parameter("dof_weights").as_double_array();
   if (!weights.empty()) {
-    Eigen::VectorXd w(weights.size());
-    for (size_t i = 0; i < weights.size(); ++i) {
-      w(static_cast<Eigen::Index>(i)) = weights[i];
+    std::string reason;
+    if (!validate_positive_vector_parameter("dof_weights", weights, model_->total_dofs(), reason)) {
+      RCLCPP_WARN(
+        get_node()->get_logger(),
+        "Ignoring invalid initial dof_weights: %s",
+        reason.c_str());
+    } else {
+      solver_.set_weights(eigen_vector_from_std(weights));
     }
-    solver_.set_weights(w);
   }
 
   const auto limits = get_node()->get_parameter("velocity_limits").as_double_array();
   if (!limits.empty()) {
-    Eigen::VectorXd v(limits.size());
-    for (size_t i = 0; i < limits.size(); ++i) {
-      v(static_cast<Eigen::Index>(i)) = limits[i];
+    std::string reason;
+    if (!validate_positive_vector_parameter("velocity_limits", limits, model_->total_dofs(), reason)) {
+      RCLCPP_WARN(
+        get_node()->get_logger(),
+        "Ignoring invalid initial velocity_limits: %s",
+        reason.c_str());
+    } else {
+      solver_.set_velocity_limits(eigen_vector_from_std(limits));
     }
-    solver_.set_velocity_limits(v);
   }
 }
 
@@ -430,6 +504,88 @@ void TaskPriorityController::refresh_task_manager()
   task_manager_ = std::make_unique<TaskManager>(
     get_node()->get_node_parameters_interface(), get_node()->get_logger());
   task_manager_->configure(TaskContext{model_});
+}
+
+rcl_interfaces::msg::SetParametersResult TaskPriorityController::on_parameters_set(
+  const std::vector<rclcpp::Parameter> & parameters)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  std::scoped_lock lock(task_mutex_);
+  for (const auto & parameter : parameters) {
+    if (parameter.get_name() == "dls_lambda") {
+      if (parameter.as_double() <= 0.0) {
+        result.successful = false;
+        result.reason = "dls_lambda must be positive";
+        return result;
+      }
+      solver_.set_damping(parameter.as_double());
+    } else if (parameter.get_name() == "solver_method") {
+      solver_.set_method(parse_solver_method(parameter.as_string()));
+    } else if (parameter.get_name() == "dof_weights") {
+      const auto values = parameter.as_double_array();
+      std::string reason;
+      if (!validate_positive_vector_parameter("dof_weights", values, model_->total_dofs(), reason)) {
+        RCLCPP_WARN(
+          get_node()->get_logger(),
+          "Rejecting invalid dof_weights parameter update: %s",
+          reason.c_str());
+        result.successful = false;
+        result.reason = reason;
+        return result;
+      }
+      solver_.set_weights(eigen_vector_from_std(values));
+    } else if (parameter.get_name() == "velocity_limits") {
+      const auto values = parameter.as_double_array();
+      std::string reason;
+      if (!validate_positive_vector_parameter("velocity_limits", values, model_->total_dofs(), reason)) {
+        RCLCPP_WARN(
+          get_node()->get_logger(),
+          "Rejecting invalid velocity_limits parameter update: %s",
+          reason.c_str());
+        result.successful = false;
+        result.reason = reason;
+        return result;
+      }
+      solver_.set_velocity_limits(eigen_vector_from_std(values));
+    } else {
+      std::string task_id;
+      std::string field;
+      if (!split_task_parameter_name(parameter.get_name(), task_id, field)) {
+        continue;
+      }
+
+      std::string message;
+      if (field == "gain") {
+        const auto values = parameter.as_double_array();
+        if (!values_are_non_negative(values)) {
+          result.successful = false;
+          result.reason = parameter.get_name() + " values must be non-negative";
+          return result;
+        }
+        if (!task_manager_->set_task_gain(task_id, values, message)) {
+          result.successful = false;
+          result.reason = message;
+          return result;
+        }
+      } else if (field == "gain_scalar") {
+        const double value = parameter.as_double();
+        if (value < 0.0) {
+          result.successful = false;
+          result.reason = parameter.get_name() + " must be non-negative";
+          return result;
+        }
+        if (!task_manager_->set_task_gain_scalar(task_id, value, message)) {
+          result.successful = false;
+          result.reason = message;
+          return result;
+        }
+      }
+    }
+  }
+
+  return result;
 }
 
 void TaskPriorityController::configure_external_interfaces()
@@ -482,6 +638,20 @@ void TaskPriorityController::configure_external_interfaces()
     {
       std::scoped_lock lock(task_mutex_);
       response->success = task_manager_->reorder_tasks(request->ordered_task_ids, response->message);
+    });
+
+  stop_srv_ = get_node()->create_service<std_srvs::srv::Trigger>(
+    "/stop_task_priority",
+    [this](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+      std::scoped_lock lock(task_mutex_);
+      task_manager_->disable_all_tasks();
+      reset_commands();
+      publish_zero_controller_output(get_node()->now());
+      response->success = true;
+      response->message = "Task priority stopped: all tasks disabled and outputs set to zero";
     });
 
   task_target_subs_.clear();
@@ -662,6 +832,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_activate(
   const rclcpp_lifecycle::State &)
 {
   reset_commands();
+  publish_zero_controller_output(get_node()->now());
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
@@ -669,6 +840,23 @@ controller_interface::CallbackReturn TaskPriorityController::on_deactivate(
   const rclcpp_lifecycle::State &)
 {
   reset_commands();
+  publish_zero_controller_output(get_node()->now());
+  return controller_interface::CallbackReturn::SUCCESS;
+}
+
+controller_interface::CallbackReturn TaskPriorityController::on_cleanup(
+  const rclcpp_lifecycle::State &)
+{
+  reset_commands();
+  publish_zero_controller_output(get_node()->now());
+  return controller_interface::CallbackReturn::SUCCESS;
+}
+
+controller_interface::CallbackReturn TaskPriorityController::on_shutdown(
+  const rclcpp_lifecycle::State &)
+{
+  reset_commands();
+  publish_zero_controller_output(get_node()->now());
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
@@ -677,6 +865,17 @@ void TaskPriorityController::reset_commands()
   for (auto & interface : command_interfaces_) {
     interface.set_value(0.0);
   }
+}
+
+void TaskPriorityController::publish_zero_controller_output(const rclcpp::Time & time)
+{
+  if (!model_) {
+    return;
+  }
+
+  WholeBodyCommand command;
+  command.generalized_velocity = Eigen::VectorXd::Zero(model_->total_dofs());
+  publish_controller_output(time, command);
 }
 
 controller_interface::return_type TaskPriorityController::update(

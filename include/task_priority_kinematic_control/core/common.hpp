@@ -53,6 +53,16 @@ struct TaskComputation
   std::string status_message;
 };
 
+struct CollisionCapsule
+{
+  std::string link_name;
+  std::string parent_link_name;
+  std::string source;
+  Eigen::Vector3d local_a = Eigen::Vector3d::Zero();
+  Eigen::Vector3d local_b = Eigen::Vector3d::Zero();
+  double radius = 0.0;
+};
+
 inline Eigen::Matrix3d skew(const Eigen::Vector3d & v)
 {
   Eigen::Matrix3d out = Eigen::Matrix3d::Zero();

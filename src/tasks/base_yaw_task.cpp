@@ -70,6 +70,17 @@ TaskComputation BaseYawTask::update(
   return computation;
 }
 
+bool BaseYawTask::set_gain_scalar(double gain, std::string & message)
+{
+  if (gain < 0.0) {
+    message = "gain_scalar must be non-negative";
+    return false;
+  }
+  gain_ = gain;
+  message = "Scalar gain updated";
+  return true;
+}
+
 }  // namespace task_priority_kinematic_control
 
 PLUGINLIB_EXPORT_CLASS(

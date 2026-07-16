@@ -9,6 +9,16 @@ bool TaskBase::set_joint_target(const std::vector<double> &, std::string & messa
   message = "Task does not accept joint targets";
   return false;
 }
+bool TaskBase::set_gain(const std::vector<double> &, std::string & message)
+{
+  message = "Task does not accept gain arrays";
+  return false;
+}
+bool TaskBase::set_gain_scalar(double, std::string & message)
+{
+  message = "Task does not accept scalar gains";
+  return false;
+}
 bool TaskBase::set_enabled(bool) { return false; }
 void TaskBase::reset() {}
 std::vector<double> TaskBase::current_target() const { return {}; }
@@ -37,6 +47,18 @@ bool TaskBaseCommon::set_pose_goal(const geometry_msgs::msg::PoseStamped & goal)
 bool TaskBaseCommon::set_joint_target(const std::vector<double> &, std::string & message)
 {
   message = "Task does not accept joint targets";
+  return false;
+}
+
+bool TaskBaseCommon::set_gain(const std::vector<double> &, std::string & message)
+{
+  message = "Task does not accept gain arrays";
+  return false;
+}
+
+bool TaskBaseCommon::set_gain_scalar(double, std::string & message)
+{
+  message = "Task does not accept scalar gains";
   return false;
 }
 

@@ -97,6 +97,41 @@ bool TaskManager::set_task_joint_target(
   return false;
 }
 
+bool TaskManager::set_task_gain(
+  const std::string & task_id,
+  const std::vector<double> & gain,
+  std::string & message)
+{
+  for (auto & task : tasks_) {
+    if (task->id() == task_id) {
+      return task->set_gain(gain, message);
+    }
+  }
+  message = "Task not found";
+  return false;
+}
+
+bool TaskManager::set_task_gain_scalar(
+  const std::string & task_id,
+  double gain,
+  std::string & message)
+{
+  for (auto & task : tasks_) {
+    if (task->id() == task_id) {
+      return task->set_gain_scalar(gain, message);
+    }
+  }
+  message = "Task not found";
+  return false;
+}
+
+void TaskManager::disable_all_tasks()
+{
+  for (auto & task : tasks_) {
+    task->set_enabled(false);
+  }
+}
+
 bool TaskManager::reorder_tasks(const std::vector<std::string> & ordered_ids, std::string & message)
 {
   if (ordered_ids.size() != tasks_.size()) {

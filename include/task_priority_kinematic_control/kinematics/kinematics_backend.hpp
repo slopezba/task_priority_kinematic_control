@@ -29,6 +29,8 @@ public:
     const std::string & from_frame,
     const std::string & to_frame) const = 0;
 
+  virtual const std::vector<CollisionCapsule> & collision_capsules() const = 0;
+
   virtual std::string name() const = 0;
 };
 

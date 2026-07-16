@@ -19,6 +19,7 @@ public:
     const KinematicsBackend & backend) override;
 
   bool set_joint_target(const std::vector<double> & target, std::string & message) override;
+  bool set_gain(const std::vector<double> & gain, std::string & message) override;
   msg::TaskStatus build_status() const override;
   std::vector<double> current_target() const override;
 

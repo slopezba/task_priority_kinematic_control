@@ -32,6 +32,11 @@ Eigen::Isometry3d PinocchioKinematicsBackend::get_relative_transform(
   throw std::runtime_error("Pinocchio backend is not implemented yet");
 }
 
+const std::vector<CollisionCapsule> & PinocchioKinematicsBackend::collision_capsules() const
+{
+  return collision_capsules_;
+}
+
 std::string PinocchioKinematicsBackend::name() const
 {
   return "pinocchio";

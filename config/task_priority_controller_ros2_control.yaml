@@ -32,6 +32,7 @@ task_priority_controller:
     body_velocity_controller_name: body_velocity
 
     task_ids:
+      - self_collision_avoidance
       - left_pose
       - right_pose
       - joint_limits
@@ -39,23 +40,37 @@ task_priority_controller:
       - right_arm_nominal
       - base_yaw
 
+    tasks.self_collision_avoidance.plugin: task_priority_kinematic_control/SelfCollisionAvoidanceTask
+    tasks.self_collision_avoidance.enabled: true
+    tasks.self_collision_avoidance.priority: 0.0
+    tasks.self_collision_avoidance.group: safety
+    tasks.self_collision_avoidance.safe_distance: 0.05
+    tasks.self_collision_avoidance.activation_distance: 0.12
+    tasks.self_collision_avoidance.gain_scalar: 1.0
+    tasks.self_collision_avoidance.max_repulsive_velocity: 0.08
+    tasks.self_collision_avoidance.check_adjacent_links: false
+    tasks.self_collision_avoidance.include_link_substrings:
+      - base_link
+      - alpha_left
+      - alpha_right
+
     tasks.left_pose.plugin: task_priority_kinematic_control/EndEffectorPoseTask
     tasks.left_pose.enabled: true
-    tasks.left_pose.priority: 0.0
+    tasks.left_pose.priority: 1.0
     tasks.left_pose.group: left
     tasks.left_pose.frame_id: cirtesub/alpha_left/ee_base_link
     tasks.left_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
 
     tasks.right_pose.plugin: task_priority_kinematic_control/EndEffectorPoseTask
     tasks.right_pose.enabled: true
-    tasks.right_pose.priority: 1.0
+    tasks.right_pose.priority: 2.0
     tasks.right_pose.group: right
     tasks.right_pose.frame_id: cirtesub/alpha_right/ee_base_link
     tasks.right_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
 
     tasks.joint_limits.plugin: task_priority_kinematic_control/JointLimitsTask
     tasks.joint_limits.enabled: true
-    tasks.joint_limits.priority: 2.0
+    tasks.joint_limits.priority: 3.0
     tasks.joint_limits.group: global
     tasks.joint_limits.margin: 0.1
     tasks.joint_limits.gain_scalar: 0.5
@@ -64,7 +79,7 @@ task_priority_controller:
 
     tasks.left_arm_nominal.plugin: task_priority_kinematic_control/JointNominalTask
     tasks.left_arm_nominal.enabled: true
-    tasks.left_arm_nominal.priority: 3.0
+    tasks.left_arm_nominal.priority: 4.0
     tasks.left_arm_nominal.group: left
     tasks.left_arm_nominal.joint_names:
       - cirtesub/alpha_left/axis_b
@@ -76,7 +91,7 @@ task_priority_controller:
 
     tasks.right_arm_nominal.plugin: task_priority_kinematic_control/JointNominalTask
     tasks.right_arm_nominal.enabled: true
-    tasks.right_arm_nominal.priority: 4.0
+    tasks.right_arm_nominal.priority: 5.0
     tasks.right_arm_nominal.group: right
     tasks.right_arm_nominal.joint_names:
       - cirtesub/alpha_right/axis_b
@@ -88,7 +103,7 @@ task_priority_controller:
 
     tasks.base_yaw.plugin: task_priority_kinematic_control/BaseYawTask
     tasks.base_yaw.enabled: true
-    tasks.base_yaw.priority: 5.0
+    tasks.base_yaw.priority: 6.0
     tasks.base_yaw.group: base
     tasks.base_yaw.target_yaw: 0.0
     tasks.base_yaw.gain_scalar: 0.5

@@ -21,11 +21,14 @@ public:
     const std::string & from_frame,
     const std::string & to_frame) const override;
 
+  const std::vector<CollisionCapsule> & collision_capsules() const override;
+
   std::string name() const override;
 
 private:
   WholeBodyModel model_;
   rclcpp::Logger logger_ = rclcpp::get_logger("PinocchioKinematicsBackend");
+  std::vector<CollisionCapsule> collision_capsules_;
 };
 
 }  // namespace task_priority_kinematic_control

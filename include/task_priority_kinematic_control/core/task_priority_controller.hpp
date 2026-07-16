@@ -14,9 +14,11 @@
 
 #include "controller_interface/controller_interface.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "realtime_tools/realtime_buffer.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
+#include "std_srvs/srv/trigger.hpp"
 #include "sura_msgs/msg/navigator.hpp"
 
 #include <mutex>
@@ -48,6 +50,12 @@ public:
   controller_interface::CallbackReturn on_deactivate(
     const rclcpp_lifecycle::State & previous_state) override;
 
+  controller_interface::CallbackReturn on_cleanup(
+    const rclcpp_lifecycle::State & previous_state) override;
+
+  controller_interface::CallbackReturn on_shutdown(
+    const rclcpp_lifecycle::State & previous_state) override;
+
 protected:
   controller_interface::return_type update(
     const rclcpp::Time & time,
@@ -69,6 +77,9 @@ private:
   void publish_controller_output(const rclcpp::Time & time, const WholeBodyCommand & command);
   void refresh_task_manager();
   void reset_commands();
+  void publish_zero_controller_output(const rclcpp::Time & time);
+  rcl_interfaces::msg::SetParametersResult on_parameters_set(
+    const std::vector<rclcpp::Parameter> & parameters);
 
   std::shared_ptr<WholeBodyModel> model_;
   WholeBodyState state_;
@@ -89,6 +100,8 @@ private:
   rclcpp::Service<srv::SetTaskEnabled>::SharedPtr set_task_enabled_srv_;
   rclcpp::Service<srv::SetTaskDisabled>::SharedPtr set_task_disabled_srv_;
   rclcpp::Service<srv::ReorderTasks>::SharedPtr reorder_tasks_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_srv_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
   realtime_tools::RealtimeBuffer<std::shared_ptr<NavigatorMsg>> navigator_buffer_;
 
   std::string backend_plugin_name_;

@@ -19,6 +19,8 @@ public:
     const WholeBodyState & state,
     const KinematicsBackend & backend) override;
 
+  bool set_gain(const std::vector<double> & gain, std::string & message) override;
+
 private:
   std::string frame_id_;
   Eigen::Matrix<double, 6, 1> gains_ = Eigen::Matrix<double, 6, 1>::Ones();

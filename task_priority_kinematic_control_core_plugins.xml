@@ -53,4 +53,10 @@
     base_class_type="task_priority_kinematic_control::TaskBase">
     <description>Track a desired base yaw angle.</description>
   </class>
+  <class
+    name="task_priority_kinematic_control/SelfCollisionAvoidanceTask"
+    type="task_priority_kinematic_control::SelfCollisionAvoidanceTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Repel simplified collision geometry away from self-collision.</description>
+  </class>
 </library>

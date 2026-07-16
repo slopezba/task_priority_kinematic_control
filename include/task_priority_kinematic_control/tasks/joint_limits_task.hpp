@@ -18,6 +18,8 @@ public:
     const WholeBodyState & state,
     const KinematicsBackend & backend) override;
 
+  bool set_gain_scalar(double gain, std::string & message) override;
+
 private:
   double margin_ = 0.1;
   double gain_ = 1.0;

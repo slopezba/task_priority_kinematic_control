@@ -76,6 +76,33 @@ std::vector<int> parse_active_base_dofs(
   return parsed_values;
 }
 
+bool split_task_parameter_name(
+  const std::string & name,
+  std::string & task_id,
+  std::string & field)
+{
+  const std::string prefix = "tasks.";
+  if (name.rfind(prefix, 0) != 0) {
+    return false;
+  }
+
+  const auto field_separator = name.rfind('.');
+  if (field_separator == std::string::npos || field_separator <= prefix.size()) {
+    return false;
+  }
+
+  task_id = name.substr(prefix.size(), field_separator - prefix.size());
+  field = name.substr(field_separator + 1);
+  return !task_id.empty() && !field.empty();
+}
+
+bool values_are_non_negative(const std::vector<double> & values)
+{
+  return std::all_of(values.begin(), values.end(), [](double value) {
+    return value >= 0.0;
+  });
+}
+
 }  // namespace
 
 RuntimeNode::RuntimeNode(const rclcpp::NodeOptions & options)
@@ -485,6 +512,39 @@ rcl_interfaces::msg::SetParametersResult RuntimeNode::on_parameters_set(
         limits(static_cast<Eigen::Index>(i)) = values[i];
       }
       solver_.set_velocity_limits(limits);
+    } else {
+      std::string task_id;
+      std::string field;
+      if (!split_task_parameter_name(parameter.get_name(), task_id, field)) {
+        continue;
+      }
+
+      std::string message;
+      if (field == "gain") {
+        const auto values = parameter.as_double_array();
+        if (!values_are_non_negative(values)) {
+          result.successful = false;
+          result.reason = parameter.get_name() + " values must be non-negative";
+          return result;
+        }
+        if (!task_manager_->set_task_gain(task_id, values, message)) {
+          result.successful = false;
+          result.reason = message;
+          return result;
+        }
+      } else if (field == "gain_scalar") {
+        const double value = parameter.as_double();
+        if (value < 0.0) {
+          result.successful = false;
+          result.reason = parameter.get_name() + " must be non-negative";
+          return result;
+        }
+        if (!task_manager_->set_task_gain_scalar(task_id, value, message)) {
+          result.successful = false;
+          result.reason = message;
+          return result;
+        }
+      }
     }
   }
 

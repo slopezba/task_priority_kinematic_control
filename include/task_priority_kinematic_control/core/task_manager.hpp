@@ -40,6 +40,15 @@ public:
     const std::string & task_id,
     const std::vector<double> & target,
     std::string & message);
+  bool set_task_gain(
+    const std::string & task_id,
+    const std::vector<double> & gain,
+    std::string & message);
+  bool set_task_gain_scalar(
+    const std::string & task_id,
+    double gain,
+    std::string & message);
+  void disable_all_tasks();
   bool reorder_tasks(const std::vector<std::string> & ordered_ids, std::string & message);
 
   std::vector<msg::TaskStatus> get_task_statuses() const;
