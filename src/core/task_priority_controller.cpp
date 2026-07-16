@@ -57,6 +57,11 @@ SolverMethod parse_solver_method(const std::string & name)
   return SolverMethod::kDls;
 }
 
+bool is_known_solver_method(const std::string & name)
+{
+  return name == "dls" || name == "pinv" || name == "svd";
+}
+
 std::string solver_method_name(SolverMethod method)
 {
   switch (method) {
@@ -119,6 +124,24 @@ bool values_are_non_negative(const std::vector<double> & values)
     return value >= 0.0;
   });
 }
+
+class ParameterUpdateGuard
+{
+public:
+  explicit ParameterUpdateGuard(std::atomic_bool & pending)
+  : pending_(pending)
+  {
+    pending_.store(true, std::memory_order_release);
+  }
+
+  ~ParameterUpdateGuard()
+  {
+    pending_.store(false, std::memory_order_release);
+  }
+
+private:
+  std::atomic_bool & pending_;
+};
 
 std::vector<int> parse_active_base_dofs(
   const std::vector<int64_t> & param_values,
@@ -506,12 +529,133 @@ void TaskPriorityController::refresh_task_manager()
   task_manager_->configure(TaskContext{model_});
 }
 
+bool TaskPriorityController::apply_runtime_tuning_command(
+  RuntimeTuningCommand & command,
+  std::string & message)
+{
+  if (command.type == RuntimeTuningCommand::Type::Solver) {
+    if (!is_known_solver_method(command.solver_method)) {
+      message = "Unknown solver_method: " + command.solver_method;
+      return false;
+    }
+    if (command.dls_lambda <= 0.0) {
+      message = "dls_lambda must be positive";
+      return false;
+    }
+    if (command.update_dof_weights) {
+      std::string reason;
+      if (!validate_positive_vector_parameter(
+          "dof_weights", command.dof_weights, model_->total_dofs(), reason))
+      {
+        message = reason;
+        return false;
+      }
+      solver_.set_weights(eigen_vector_from_std(command.dof_weights));
+    }
+    solver_.set_method(parse_solver_method(command.solver_method));
+    solver_.set_damping(command.dls_lambda);
+    message = "Solver config updated";
+    return true;
+  }
+
+  for (const auto & update : command.gain_updates) {
+    std::string update_message;
+    if (update.field == "gain") {
+      if (!values_are_non_negative(update.values)) {
+        message = "tasks." + update.task_id + ".gain values must be non-negative";
+        return false;
+      }
+      if (!task_manager_->set_task_gain(update.task_id, update.values, update_message)) {
+        message = update_message;
+        return false;
+      }
+    } else if (update.field == "gain_scalar") {
+      if (update.values.size() != 1U) {
+        message = "tasks." + update.task_id + ".gain_scalar must contain one value";
+        return false;
+      }
+      if (update.values.front() < 0.0) {
+        message = "tasks." + update.task_id + ".gain_scalar must be non-negative";
+        return false;
+      }
+      if (!task_manager_->set_task_gain_scalar(update.task_id, update.values.front(), update_message)) {
+        message = update_message;
+        return false;
+      }
+    } else {
+      message = "Unsupported gain field: " + update.field;
+      return false;
+    }
+  }
+
+  message = "Task gains updated";
+  return true;
+}
+
+void TaskPriorityController::process_pending_runtime_tuning()
+{
+  std::deque<std::shared_ptr<RuntimeTuningCommand>> commands;
+  {
+    std::scoped_lock lock(runtime_tuning_mutex_);
+    commands.swap(pending_runtime_tuning_);
+  }
+
+  if (commands.empty()) {
+    return;
+  }
+
+  std::scoped_lock task_lock(task_mutex_);
+  for (const auto & command : commands) {
+    {
+      std::scoped_lock command_lock(command->mutex);
+      if (command->canceled) {
+        continue;
+      }
+    }
+
+    std::string message;
+    const bool success = apply_runtime_tuning_command(*command, message);
+    {
+      std::scoped_lock command_lock(command->mutex);
+      command->success = success;
+      command->message = message;
+      command->completed = true;
+    }
+    command->cv.notify_all();
+  }
+}
+
+bool TaskPriorityController::enqueue_runtime_tuning_command(
+  const std::shared_ptr<RuntimeTuningCommand> & command,
+  std::string & message)
+{
+  {
+    std::scoped_lock lock(runtime_tuning_mutex_);
+    pending_runtime_tuning_.push_back(command);
+  }
+
+  std::unique_lock<std::mutex> lock(command->mutex);
+  const bool completed = command->cv.wait_for(
+    lock,
+    std::chrono::seconds(2),
+    [&command]() { return command->completed; });
+  if (!completed) {
+    command->canceled = true;
+    message = "Timed out waiting for controller update";
+    return false;
+  }
+
+  message = command->message;
+  return command->success;
+}
+
 rcl_interfaces::msg::SetParametersResult TaskPriorityController::on_parameters_set(
   const std::vector<rclcpp::Parameter> & parameters)
 {
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
 
+  ParameterUpdateGuard pending(parameter_update_pending_);
   std::scoped_lock lock(task_mutex_);
   for (const auto & parameter : parameters) {
     if (parameter.get_name() == "dls_lambda") {
@@ -628,6 +772,40 @@ void TaskPriorityController::configure_external_interfaces()
     {
       std::scoped_lock lock(task_mutex_);
       response->success = task_manager_->set_task_enabled(request->task_id, false, response->message);
+    });
+
+  set_solver_config_srv_ = get_node()->create_service<srv::SetSolverConfig>(
+    "/set_solver_config",
+    [this](
+      const std::shared_ptr<srv::SetSolverConfig::Request> request,
+      std::shared_ptr<srv::SetSolverConfig::Response> response)
+    {
+      auto command = std::make_shared<RuntimeTuningCommand>();
+      command->type = RuntimeTuningCommand::Type::Solver;
+      command->solver_method = request->solver_method;
+      command->dls_lambda = request->dls_lambda;
+      command->update_dof_weights = request->update_dof_weights;
+      command->dof_weights = request->dof_weights;
+      response->success = enqueue_runtime_tuning_command(command, response->message);
+    });
+
+  set_task_gains_srv_ = get_node()->create_service<srv::SetTaskGains>(
+    "/set_task_gains",
+    [this](
+      const std::shared_ptr<srv::SetTaskGains::Request> request,
+      std::shared_ptr<srv::SetTaskGains::Response> response)
+    {
+      auto command = std::make_shared<RuntimeTuningCommand>();
+      command->type = RuntimeTuningCommand::Type::Gains;
+      command->gain_updates.reserve(request->updates.size());
+      for (const auto & update : request->updates) {
+        RuntimeGainUpdate runtime_update;
+        runtime_update.task_id = update.task_id;
+        runtime_update.field = update.field;
+        runtime_update.values = update.values;
+        command->gain_updates.push_back(runtime_update);
+      }
+      response->success = enqueue_runtime_tuning_command(command, response->message);
     });
 
   reorder_tasks_srv_ = get_node()->create_service<srv::ReorderTasks>(
@@ -893,6 +1071,8 @@ controller_interface::return_type TaskPriorityController::update(
     return controller_interface::return_type::ERROR;
   }
 
+  process_pending_runtime_tuning();
+
   auto navigator_msg = navigator_buffer_.readFromRT();
   if (!navigator_msg || !(*navigator_msg)) {
     reset_commands();
@@ -939,6 +1119,10 @@ controller_interface::return_type TaskPriorityController::update(
 
   WholeBodyCommand command;
   {
+    if (parameter_update_pending_.load(std::memory_order_acquire)) {
+      return controller_interface::return_type::OK;
+    }
+
     std::scoped_lock lock(task_mutex_);
     backend_->update(state_);
     const auto task_outputs = task_manager_->update_all(state_, *backend_);

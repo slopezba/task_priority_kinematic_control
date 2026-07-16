@@ -9,8 +9,10 @@
 #include "task_priority_kinematic_control/msg/task_state.hpp"
 #include "task_priority_kinematic_control/srv/list_tasks.hpp"
 #include "task_priority_kinematic_control/srv/reorder_tasks.hpp"
+#include "task_priority_kinematic_control/srv/set_solver_config.hpp"
 #include "task_priority_kinematic_control/srv/set_task_disabled.hpp"
 #include "task_priority_kinematic_control/srv/set_task_enabled.hpp"
+#include "task_priority_kinematic_control/srv/set_task_gains.hpp"
 
 #include "controller_interface/controller_interface.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -21,6 +23,9 @@
 #include "std_srvs/srv/trigger.hpp"
 #include "sura_msgs/msg/navigator.hpp"
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <pluginlib/class_loader.hpp>
 #include <rclcpp/parameter_client.hpp>
@@ -66,6 +71,35 @@ private:
   using PoseStamped = geometry_msgs::msg::PoseStamped;
   using Float64MultiArray = std_msgs::msg::Float64MultiArray;
 
+  struct RuntimeGainUpdate
+  {
+    std::string task_id;
+    std::string field;
+    std::vector<double> values;
+  };
+
+  struct RuntimeTuningCommand
+  {
+    enum class Type
+    {
+      Solver,
+      Gains
+    };
+
+    Type type = Type::Solver;
+    std::string solver_method;
+    double dls_lambda = 0.0;
+    bool update_dof_weights = false;
+    std::vector<double> dof_weights;
+    std::vector<RuntimeGainUpdate> gain_updates;
+    bool completed = false;
+    bool canceled = false;
+    bool success = false;
+    std::string message;
+    std::mutex mutex;
+    std::condition_variable cv;
+  };
+
   void declare_task_parameters();
   std::string resolve_robot_description();
   void rebuild_backend();
@@ -76,6 +110,11 @@ private:
   void publish_task_states(const std::vector<TaskComputation> & task_outputs);
   void publish_controller_output(const rclcpp::Time & time, const WholeBodyCommand & command);
   void refresh_task_manager();
+  bool apply_runtime_tuning_command(RuntimeTuningCommand & command, std::string & message);
+  void process_pending_runtime_tuning();
+  bool enqueue_runtime_tuning_command(
+    const std::shared_ptr<RuntimeTuningCommand> & command,
+    std::string & message);
   void reset_commands();
   void publish_zero_controller_output(const rclcpp::Time & time);
   rcl_interfaces::msg::SetParametersResult on_parameters_set(
@@ -99,6 +138,8 @@ private:
   rclcpp::Service<srv::ListTasks>::SharedPtr list_tasks_srv_;
   rclcpp::Service<srv::SetTaskEnabled>::SharedPtr set_task_enabled_srv_;
   rclcpp::Service<srv::SetTaskDisabled>::SharedPtr set_task_disabled_srv_;
+  rclcpp::Service<srv::SetSolverConfig>::SharedPtr set_solver_config_srv_;
+  rclcpp::Service<srv::SetTaskGains>::SharedPtr set_task_gains_srv_;
   rclcpp::Service<srv::ReorderTasks>::SharedPtr reorder_tasks_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_srv_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
@@ -110,6 +151,9 @@ private:
   std::vector<std::string> right_arm_joints_;
   std::vector<std::string> task_ids_;
   std::vector<int> active_base_dofs_;
+  std::mutex runtime_tuning_mutex_;
+  std::deque<std::shared_ptr<RuntimeTuningCommand>> pending_runtime_tuning_;
+  std::atomic_bool parameter_update_pending_{false};
   std::mutex task_mutex_;
 };
 

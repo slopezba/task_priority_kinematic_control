@@ -1,0 +1,4 @@
+task_priority_kinematic_control/TaskGainUpdate[] updates
+---
+bool success
+string message

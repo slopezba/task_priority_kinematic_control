@@ -1,0 +1,7 @@
+string solver_method
+float64 dls_lambda
+bool update_dof_weights
+float64[] dof_weights
+---
+bool success
+string message

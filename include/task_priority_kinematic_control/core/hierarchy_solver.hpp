@@ -23,6 +23,7 @@ public:
 
 private:
   Eigen::MatrixXd weighted_inverse(const Eigen::MatrixXd & jacobian) const;
+  Eigen::MatrixXd strict_pseudo_inverse(const Eigen::MatrixXd & matrix) const;
   Eigen::VectorXd apply_velocity_limits(const Eigen::VectorXd & command) const;
 
   size_t dofs_ = 0;
