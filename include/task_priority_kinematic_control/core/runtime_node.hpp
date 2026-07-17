@@ -12,12 +12,15 @@
 #include "task_priority_kinematic_control/srv/set_task_enabled.hpp"
 #include "task_priority_kinematic_control/srv/switch_backend.hpp"
 
+#include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <sura_msgs/msg/navigator.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
 
 #include <pluginlib/class_loader.hpp>
 #include <rclcpp/node.hpp>
@@ -49,6 +52,10 @@ private:
   void joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr msg);
   void timer_callback();
   void publish_status();
+  void execute_task_trajectory_goal(
+    const std::string & task_id,
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<
+      control_msgs::action::FollowJointTrajectory>> goal_handle);
   rcl_interfaces::msg::SetParametersResult on_parameters_set(
     const std::vector<rclcpp::Parameter> & parameters);
 
@@ -65,6 +72,10 @@ private:
     task_target_subs_;
   std::map<std::string, rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr>
     task_joint_target_subs_;
+  std::map<std::string, rclcpp::Subscription<trajectory_msgs::msg::JointTrajectory>::SharedPtr>
+    task_joint_trajectory_subs_;
+  std::map<std::string, rclcpp_action::Server<control_msgs::action::FollowJointTrajectory>::SharedPtr>
+    task_joint_trajectory_action_servers_;
 
   rclcpp::Subscription<sura_msgs::msg::Navigator>::SharedPtr navigator_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;

@@ -53,6 +53,17 @@ struct TaskComputation
   std::string status_message;
 };
 
+struct JointTrajectoryTaskStatus
+{
+  bool accepted = false;
+  bool active = false;
+  bool succeeded = false;
+  bool canceled = false;
+  bool timed_out = false;
+  double final_error_norm = 0.0;
+  std::string message;
+};
+
 struct CollisionCapsule
 {
   std::string link_name;

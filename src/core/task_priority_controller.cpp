@@ -8,6 +8,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 
 #include "pluginlib/class_list_macros.hpp"
 
@@ -323,6 +324,9 @@ void TaskPriorityController::declare_task_parameters()
     auto_declare_if_missing(this, prefix + "joint_names", std::vector<std::string>{});
     auto_declare_if_missing(this, prefix + "target", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "target_yaw", 0.0);
+    auto_declare_if_missing(this, prefix + "goal_tolerance", std::vector<double>{});
+    auto_declare_if_missing(this, prefix + "trajectory_timeout", 0.5);
+    auto_declare_if_missing(this, prefix + "hold_last_point", true);
   }
 }
 
@@ -834,6 +838,8 @@ void TaskPriorityController::configure_external_interfaces()
 
   task_target_subs_.clear();
   task_joint_target_subs_.clear();
+  task_joint_trajectory_subs_.clear();
+  task_joint_trajectory_action_servers_.clear();
   task_state_pubs_.clear();
   for (const auto & task : task_manager_->tasks()) {
     const auto & task_id = task->id();
@@ -862,6 +868,52 @@ void TaskPriorityController::configure_external_interfaces()
           "task_priority/tasks/" + task_id + "/joint_target",
           rclcpp::SystemDefaultsQoS(),
           joint_target_callback);
+      } else if (task->plugin_name().find("JointTrajectoryTask") != std::string::npos) {
+        const auto trajectory_topic = "task_priority/tasks/" + task_id + "/joint_trajectory";
+        task_joint_trajectory_subs_[task_id] = get_node()->create_subscription<JointTrajectory>(
+          trajectory_topic,
+          rclcpp::SystemDefaultsQoS(),
+          [this, task_id](const JointTrajectory::SharedPtr msg)
+          {
+            if (!msg) {
+              return;
+            }
+            std::string message;
+            std::scoped_lock lock(task_mutex_);
+            if (!task_manager_->set_task_joint_trajectory(task_id, *msg, message)) {
+              RCLCPP_WARN(
+                get_node()->get_logger(),
+                "Rejected joint trajectory for task '%s': %s",
+                task_id.c_str(),
+                message.c_str());
+            }
+          });
+
+        const auto action_name = "task_priority/tasks/" + task_id + "/follow_joint_trajectory";
+        task_joint_trajectory_action_servers_[task_id] =
+          rclcpp_action::create_server<FollowJointTrajectory>(
+          get_node(),
+          action_name,
+          [](const rclcpp_action::GoalUUID &,
+          std::shared_ptr<const FollowJointTrajectory::Goal>)
+          {
+            return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+          },
+          [this, task_id](const std::shared_ptr<FollowJointTrajectoryGoalHandle>)
+          {
+            std::string message;
+            std::scoped_lock lock(task_mutex_);
+            task_manager_->cancel_task_joint_trajectory(task_id, message);
+            return rclcpp_action::CancelResponse::ACCEPT;
+          },
+          [this, task_id](const std::shared_ptr<FollowJointTrajectoryGoalHandle> goal_handle)
+          {
+            std::thread(
+              &TaskPriorityController::execute_task_trajectory_goal,
+              this,
+              task_id,
+              goal_handle).detach();
+          });
       }
       continue;
     }
@@ -1054,6 +1106,66 @@ void TaskPriorityController::publish_zero_controller_output(const rclcpp::Time &
   WholeBodyCommand command;
   command.generalized_velocity = Eigen::VectorXd::Zero(model_->total_dofs());
   publish_controller_output(time, command);
+}
+
+void TaskPriorityController::execute_task_trajectory_goal(
+  const std::string & task_id,
+  const std::shared_ptr<FollowJointTrajectoryGoalHandle> goal_handle)
+{
+  auto result = std::make_shared<FollowJointTrajectory::Result>();
+  std::string message;
+  {
+    std::scoped_lock lock(task_mutex_);
+    if (!task_manager_->set_task_joint_trajectory(task_id, goal_handle->get_goal()->trajectory, message)) {
+      result->error_code = FollowJointTrajectory::Result::INVALID_GOAL;
+      result->error_string = message;
+      goal_handle->abort(result);
+      return;
+    }
+  }
+
+  rclcpp::Rate rate(50.0);
+  while (rclcpp::ok()) {
+    if (goal_handle->is_canceling()) {
+      std::scoped_lock lock(task_mutex_);
+      task_manager_->cancel_task_joint_trajectory(task_id, message);
+      result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
+      result->error_string = "Joint trajectory task canceled";
+      goal_handle->canceled(result);
+      return;
+    }
+
+    JointTrajectoryTaskStatus status;
+    {
+      std::scoped_lock lock(task_mutex_);
+      status = task_manager_->get_task_joint_trajectory_status(task_id);
+    }
+
+    if (status.succeeded) {
+      result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
+      result->error_string = status.message;
+      goal_handle->succeed(result);
+      return;
+    }
+    if (status.canceled) {
+      result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
+      result->error_string = status.message;
+      goal_handle->canceled(result);
+      return;
+    }
+    if (status.timed_out) {
+      result->error_code = FollowJointTrajectory::Result::GOAL_TOLERANCE_VIOLATED;
+      result->error_string = status.message;
+      goal_handle->abort(result);
+      return;
+    }
+
+    rate.sleep();
+  }
+
+  result->error_code = FollowJointTrajectory::Result::INVALID_GOAL;
+  result->error_string = "ROS shutdown during joint trajectory task execution";
+  goal_handle->abort(result);
 }
 
 controller_interface::return_type TaskPriorityController::update(

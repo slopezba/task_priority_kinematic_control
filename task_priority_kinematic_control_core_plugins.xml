@@ -42,6 +42,12 @@
     <description>Bias the solution toward a nominal joint configuration.</description>
   </class>
   <class
+    name="task_priority_kinematic_control/JointTrajectoryTask"
+    type="task_priority_kinematic_control::JointTrajectoryTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Track a time-parameterized joint trajectory as a task-space velocity objective.</description>
+  </class>
+  <class
     name="task_priority_kinematic_control/JointLimitsTask"
     type="task_priority_kinematic_control::JointLimitsTask"
     base_class_type="task_priority_kinematic_control::TaskBase">

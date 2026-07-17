@@ -14,14 +14,17 @@
 #include "task_priority_kinematic_control/srv/set_task_enabled.hpp"
 #include "task_priority_kinematic_control/srv/set_task_gains.hpp"
 
+#include "control_msgs/action/follow_joint_trajectory.hpp"
 #include "controller_interface/controller_interface.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "realtime_tools/realtime_buffer.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "sura_msgs/msg/navigator.hpp"
+#include "trajectory_msgs/msg/joint_trajectory.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -70,6 +73,9 @@ private:
   using NavigatorMsg = sura_msgs::msg::Navigator;
   using PoseStamped = geometry_msgs::msg::PoseStamped;
   using Float64MultiArray = std_msgs::msg::Float64MultiArray;
+  using JointTrajectory = trajectory_msgs::msg::JointTrajectory;
+  using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
+  using FollowJointTrajectoryGoalHandle = rclcpp_action::ServerGoalHandle<FollowJointTrajectory>;
 
   struct RuntimeGainUpdate
   {
@@ -117,6 +123,9 @@ private:
     std::string & message);
   void reset_commands();
   void publish_zero_controller_output(const rclcpp::Time & time);
+  void execute_task_trajectory_goal(
+    const std::string & task_id,
+    const std::shared_ptr<FollowJointTrajectoryGoalHandle> goal_handle);
   rcl_interfaces::msg::SetParametersResult on_parameters_set(
     const std::vector<rclcpp::Parameter> & parameters);
 
@@ -132,6 +141,9 @@ private:
   rclcpp::Subscription<NavigatorMsg>::SharedPtr navigator_sub_;
   std::map<std::string, rclcpp::Subscription<PoseStamped>::SharedPtr> task_target_subs_;
   std::map<std::string, rclcpp::Subscription<Float64MultiArray>::SharedPtr> task_joint_target_subs_;
+  std::map<std::string, rclcpp::Subscription<JointTrajectory>::SharedPtr> task_joint_trajectory_subs_;
+  std::map<std::string, rclcpp_action::Server<FollowJointTrajectory>::SharedPtr>
+    task_joint_trajectory_action_servers_;
   rclcpp::Publisher<msg::HierarchyState>::SharedPtr hierarchy_state_pub_;
   rclcpp::Publisher<msg::ControllerOutput>::SharedPtr controller_output_pub_;
   std::map<std::string, rclcpp::Publisher<msg::TaskState>::SharedPtr> task_state_pubs_;

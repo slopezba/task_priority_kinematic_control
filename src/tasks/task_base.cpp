@@ -9,6 +9,23 @@ bool TaskBase::set_joint_target(const std::vector<double> &, std::string & messa
   message = "Task does not accept joint targets";
   return false;
 }
+bool TaskBase::set_joint_trajectory(
+  const trajectory_msgs::msg::JointTrajectory &, std::string & message)
+{
+  message = "Task does not accept joint trajectories";
+  return false;
+}
+bool TaskBase::cancel_joint_trajectory(std::string & message)
+{
+  message = "Task does not accept joint trajectories";
+  return false;
+}
+JointTrajectoryTaskStatus TaskBase::joint_trajectory_status() const
+{
+  JointTrajectoryTaskStatus status;
+  status.message = "Task does not accept joint trajectories";
+  return status;
+}
 bool TaskBase::set_gain(const std::vector<double> &, std::string & message)
 {
   message = "Task does not accept gain arrays";
@@ -48,6 +65,26 @@ bool TaskBaseCommon::set_joint_target(const std::vector<double> &, std::string &
 {
   message = "Task does not accept joint targets";
   return false;
+}
+
+bool TaskBaseCommon::set_joint_trajectory(
+  const trajectory_msgs::msg::JointTrajectory &, std::string & message)
+{
+  message = "Task does not accept joint trajectories";
+  return false;
+}
+
+bool TaskBaseCommon::cancel_joint_trajectory(std::string & message)
+{
+  message = "Task does not accept joint trajectories";
+  return false;
+}
+
+JointTrajectoryTaskStatus TaskBaseCommon::joint_trajectory_status() const
+{
+  JointTrajectoryTaskStatus status;
+  status.message = "Task does not accept joint trajectories";
+  return status;
 }
 
 bool TaskBaseCommon::set_gain(const std::vector<double> &, std::string & message)

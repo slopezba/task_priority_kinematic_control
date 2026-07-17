@@ -97,6 +97,44 @@ bool TaskManager::set_task_joint_target(
   return false;
 }
 
+bool TaskManager::set_task_joint_trajectory(
+  const std::string & task_id,
+  const trajectory_msgs::msg::JointTrajectory & trajectory,
+  std::string & message)
+{
+  for (auto & task : tasks_) {
+    if (task->id() == task_id) {
+      return task->set_joint_trajectory(trajectory, message);
+    }
+  }
+  message = "Task not found";
+  return false;
+}
+
+bool TaskManager::cancel_task_joint_trajectory(const std::string & task_id, std::string & message)
+{
+  for (auto & task : tasks_) {
+    if (task->id() == task_id) {
+      return task->cancel_joint_trajectory(message);
+    }
+  }
+  message = "Task not found";
+  return false;
+}
+
+JointTrajectoryTaskStatus TaskManager::get_task_joint_trajectory_status(
+  const std::string & task_id) const
+{
+  for (const auto & task : tasks_) {
+    if (task->id() == task_id) {
+      return task->joint_trajectory_status();
+    }
+  }
+  JointTrajectoryTaskStatus status;
+  status.message = "Task not found";
+  return status;
+}
+
 bool TaskManager::set_task_gain(
   const std::string & task_id,
   const std::vector<double> & gain,

@@ -7,6 +7,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(control_msgs REQUIRED)
 find_package(controller_interface REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(hardware_interface REQUIRED)
@@ -16,12 +17,14 @@ find_package(interactive_markers REQUIRED)
 find_package(kdl_parser REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(realtime_tools REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(sura_msgs REQUIRED)
+find_package(trajectory_msgs REQUIRED)
 find_package(urdf REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
@@ -58,6 +61,7 @@ add_library(${core_target} SHARED
   src/tasks/end_effector_pose_task.cpp
   src/tasks/frame_pose_task.cpp
   src/tasks/joint_nominal_task.cpp
+  src/tasks/joint_trajectory_task.cpp
   src/tasks/joint_limits_task.cpp
   src/tasks/base_yaw_task.cpp
   src/tasks/self_collision_avoidance_task.cpp
@@ -77,16 +81,19 @@ target_link_libraries(${core_target}
 ament_target_dependencies(${core_target}
   controller_interface
   ament_index_cpp
+  control_msgs
   geometry_msgs
   hardware_interface
   kdl_parser
   pluginlib
   rclcpp
+  rclcpp_action
   realtime_tools
   sensor_msgs
   std_msgs
   std_srvs
   sura_msgs
+  trajectory_msgs
   urdf
 )
 
@@ -137,17 +144,20 @@ ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   controller_interface
   ament_index_cpp
+  control_msgs
   geometry_msgs
   hardware_interface
   interactive_markers
   kdl_parser
   pluginlib
   rclcpp
+  rclcpp_action
   realtime_tools
   sensor_msgs
   std_msgs
   std_srvs
   sura_msgs
+  trajectory_msgs
   urdf
   visualization_msgs
   rosidl_default_runtime
@@ -160,6 +170,12 @@ if(BUILD_TESTING)
   if(TARGET test_hierarchy_solver)
     target_link_libraries(test_hierarchy_solver ${core_target})
     ament_target_dependencies(test_hierarchy_solver rclcpp)
+  endif()
+
+  ament_add_gtest(test_joint_trajectory_task test/test_joint_trajectory_task.cpp)
+  if(TARGET test_joint_trajectory_task)
+    target_link_libraries(test_joint_trajectory_task ${core_target})
+    ament_target_dependencies(test_joint_trajectory_task rclcpp)
   endif()
 endif()
 

@@ -9,6 +9,7 @@
 #include <pluginlib/class_loader.hpp>
 #include <rclcpp/logger.hpp>
 #include <rclcpp/node_interfaces/node_parameters_interface.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
 
 #include <map>
 #include <memory>
@@ -40,6 +41,12 @@ public:
     const std::string & task_id,
     const std::vector<double> & target,
     std::string & message);
+  bool set_task_joint_trajectory(
+    const std::string & task_id,
+    const trajectory_msgs::msg::JointTrajectory & trajectory,
+    std::string & message);
+  bool cancel_task_joint_trajectory(const std::string & task_id, std::string & message);
+  JointTrajectoryTaskStatus get_task_joint_trajectory_status(const std::string & task_id) const;
   bool set_task_gain(
     const std::string & task_id,
     const std::vector<double> & gain,

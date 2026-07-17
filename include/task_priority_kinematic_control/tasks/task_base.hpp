@@ -7,6 +7,7 @@
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/parameter.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <map>
 #include <memory>
 #include <string>
@@ -36,6 +37,11 @@ public:
 
   virtual bool set_pose_goal(const geometry_msgs::msg::PoseStamped & goal);
   virtual bool set_joint_target(const std::vector<double> & target, std::string & message);
+  virtual bool set_joint_trajectory(
+    const trajectory_msgs::msg::JointTrajectory & trajectory,
+    std::string & message);
+  virtual bool cancel_joint_trajectory(std::string & message);
+  virtual JointTrajectoryTaskStatus joint_trajectory_status() const;
   virtual bool set_gain(const std::vector<double> & gain, std::string & message);
   virtual bool set_gain_scalar(double gain, std::string & message);
   virtual bool set_enabled(bool enabled);
@@ -56,6 +62,11 @@ class TaskBaseCommon : public TaskBase
 public:
   bool set_pose_goal(const geometry_msgs::msg::PoseStamped & goal) override;
   bool set_joint_target(const std::vector<double> & target, std::string & message) override;
+  bool set_joint_trajectory(
+    const trajectory_msgs::msg::JointTrajectory & trajectory,
+    std::string & message) override;
+  bool cancel_joint_trajectory(std::string & message) override;
+  JointTrajectoryTaskStatus joint_trajectory_status() const override;
   bool set_gain(const std::vector<double> & gain, std::string & message) override;
   bool set_gain_scalar(double gain, std::string & message) override;
   bool set_enabled(bool enabled) override;
