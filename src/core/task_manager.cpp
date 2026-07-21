@@ -163,6 +163,20 @@ bool TaskManager::set_task_gain_scalar(
   return false;
 }
 
+bool TaskManager::set_task_joint_activation(
+  const std::string & task_id,
+  const std::vector<bool> & activation,
+  std::string & message)
+{
+  for (auto & task : tasks_) {
+    if (task->id() == task_id) {
+      return task->set_joint_activation(activation, message);
+    }
+  }
+  message = "Task not found";
+  return false;
+}
+
 void TaskManager::disable_all_tasks()
 {
   for (auto & task : tasks_) {

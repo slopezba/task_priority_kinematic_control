@@ -162,9 +162,13 @@ void RuntimeNode::declare_parameters()
     declare_if_missing<std::vector<double>>(*this, prefix + "lower_limits", {});
     declare_if_missing<std::vector<double>>(*this, prefix + "upper_limits", {});
     declare_if_missing<double>(*this, prefix + "margin", 0.1);
+    declare_if_missing<double>(*this, prefix + "alpha", 0.1);
+    declare_if_missing<double>(*this, prefix + "delta", 0.15);
+    declare_if_missing<double>(*this, prefix + "eps", 1e-4);
     declare_if_missing<double>(*this, prefix + "gain_scalar", 0.5);
     declare_if_missing<std::vector<std::string>>(*this, prefix + "joint_names", {});
     declare_if_missing<std::vector<double>>(*this, prefix + "target", {});
+    declare_if_missing<std::vector<int64_t>>(*this, prefix + "activation", {});
     declare_if_missing<double>(*this, prefix + "target_yaw", 0.0);
     declare_if_missing<std::vector<double>>(*this, prefix + "goal_tolerance", {});
     declare_if_missing<double>(*this, prefix + "trajectory_timeout", 0.5);
@@ -392,6 +396,16 @@ void RuntimeNode::configure_services()
       const std::shared_ptr<srv::SetTaskEnabled::Request> request,
       std::shared_ptr<srv::SetTaskEnabled::Response> response) {
       response->success = task_manager_->set_task_enabled(request->task_id, request->enabled, response->message);
+    });
+  set_task_joint_activation_srv_ = this->create_service<srv::SetTaskJointActivation>(
+    "set_task_joint_activation",
+    [this](
+      const std::shared_ptr<srv::SetTaskJointActivation::Request> request,
+      std::shared_ptr<srv::SetTaskJointActivation::Response> response) {
+      response->success = task_manager_->set_task_joint_activation(
+        request->task_id,
+        request->joint_activation,
+        response->message);
     });
   reorder_tasks_srv_ = this->create_service<srv::ReorderTasks>(
     "reorder_tasks",

@@ -39,6 +39,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetTaskDisabled.srv"
   "srv/SetSolverConfig.srv"
   "srv/SetTaskGains.srv"
+  "srv/SetTaskJointActivation.srv"
   "srv/ReorderTasks.srv"
   "srv/ListTasks.srv"
   "srv/SwitchBackend.srv"
@@ -59,6 +60,7 @@ add_library(${core_target} SHARED
   src/tasks/end_effector_position_task.cpp
   src/tasks/end_effector_orientation_task.cpp
   src/tasks/end_effector_pose_task.cpp
+  src/tasks/end_effectors_relative_pose_task.cpp
   src/tasks/frame_pose_task.cpp
   src/tasks/joint_nominal_task.cpp
   src/tasks/joint_trajectory_task.cpp
@@ -176,6 +178,24 @@ if(BUILD_TESTING)
   if(TARGET test_joint_trajectory_task)
     target_link_libraries(test_joint_trajectory_task ${core_target})
     ament_target_dependencies(test_joint_trajectory_task rclcpp)
+  endif()
+
+  ament_add_gtest(test_joint_nominal_task test/test_joint_nominal_task.cpp)
+  if(TARGET test_joint_nominal_task)
+    target_link_libraries(test_joint_nominal_task ${core_target})
+    ament_target_dependencies(test_joint_nominal_task rclcpp)
+  endif()
+
+  ament_add_gtest(test_joint_limits_task test/test_joint_limits_task.cpp)
+  if(TARGET test_joint_limits_task)
+    target_link_libraries(test_joint_limits_task ${core_target})
+    ament_target_dependencies(test_joint_limits_task rclcpp)
+  endif()
+
+  ament_add_gtest(test_end_effectors_relative_pose_task test/test_end_effectors_relative_pose_task.cpp)
+  if(TARGET test_end_effectors_relative_pose_task)
+    target_link_libraries(test_end_effectors_relative_pose_task ${core_target})
+    ament_target_dependencies(test_end_effectors_relative_pose_task rclcpp)
   endif()
 endif()
 

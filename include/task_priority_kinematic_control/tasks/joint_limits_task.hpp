@@ -21,10 +21,14 @@ public:
   bool set_gain_scalar(double gain, std::string & message) override;
 
 private:
-  double margin_ = 0.1;
+  double alpha_ = 0.1;
+  double delta_ = 0.15;
+  double eps_ = 1e-4;
   double gain_ = 1.0;
   Eigen::VectorXd lower_limits_;
   Eigen::VectorXd upper_limits_;
+  std::vector<bool> lower_active_;
+  std::vector<bool> upper_active_;
 };
 
 }  // namespace task_priority_kinematic_control

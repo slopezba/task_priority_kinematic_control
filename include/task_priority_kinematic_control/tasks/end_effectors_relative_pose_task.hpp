@@ -5,7 +5,7 @@
 namespace task_priority_kinematic_control
 {
 
-class JointNominalTask : public TaskBaseCommon
+class EndEffectorsRelativePoseTask : public TaskBaseCommon
 {
 public:
   void configure(
@@ -18,17 +18,18 @@ public:
     const WholeBodyState & state,
     const KinematicsBackend & backend) override;
 
-  bool set_joint_target(const std::vector<double> & target, std::string & message) override;
+  bool set_pose_goal(const geometry_msgs::msg::PoseStamped & goal) override;
   bool set_gain(const std::vector<double> & gain, std::string & message) override;
-  bool set_joint_activation(const std::vector<bool> & activation, std::string & message) override;
   msg::TaskStatus build_status() const override;
   std::vector<double> current_target() const override;
 
 private:
-  std::vector<std::string> joint_names_;
-  Eigen::VectorXd target_;
-  Eigen::VectorXd gains_;
-  std::vector<bool> joint_activation_;
+  std::string reference_frame_;
+  std::string controlled_frame_;
+  Eigen::Matrix<double, 6, 1> gains_ = Eigen::Matrix<double, 6, 1>::Ones();
+  Eigen::Matrix<bool, 6, 1> activation_ = Eigen::Matrix<bool, 6, 1>::Constant(true);
+  Eigen::Isometry3d target_relative_pose_ = Eigen::Isometry3d::Identity();
+  bool has_target_relative_pose_ = false;
 };
 
 }  // namespace task_priority_kinematic_control

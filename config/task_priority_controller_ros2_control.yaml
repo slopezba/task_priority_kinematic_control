@@ -33,6 +33,7 @@ task_priority_controller:
 
     task_ids:
       - self_collision_avoidance
+      - EndEffectors_Relative_pose
       - left_pose
       - right_pose
       - joint_limits
@@ -68,11 +69,22 @@ task_priority_controller:
     tasks.right_pose.frame_id: cirtesub/alpha_right/ee_base_link
     tasks.right_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
 
+    tasks.EndEffectors_Relative_pose.plugin: task_priority_kinematic_control/EndEffectorsRelativePoseTask
+    tasks.EndEffectors_Relative_pose.enabled: false
+    tasks.EndEffectors_Relative_pose.priority: 2.0
+    tasks.EndEffectors_Relative_pose.group: bimanual
+    tasks.EndEffectors_Relative_pose.reference_frame: cirtesub/alpha_left/ee_base_link
+    tasks.EndEffectors_Relative_pose.controlled_frame: cirtesub/alpha_right/ee_base_link
+    tasks.EndEffectors_Relative_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
+    tasks.EndEffectors_Relative_pose.activation: [1, 1, 1, 1, 1, 1]
+
     tasks.joint_limits.plugin: task_priority_kinematic_control/JointLimitsTask
     tasks.joint_limits.enabled: true
     tasks.joint_limits.priority: 3.0
     tasks.joint_limits.group: global
-    tasks.joint_limits.margin: 0.1
+    tasks.joint_limits.alpha: 0.1
+    tasks.joint_limits.delta: 0.15
+    tasks.joint_limits.eps: 0.0001
     tasks.joint_limits.gain_scalar: 0.5
     tasks.joint_limits.lower_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     tasks.joint_limits.upper_limits: [3.22, 3.22, 3.49, 6.10, 3.22, 3.22, 3.49, 6.10]

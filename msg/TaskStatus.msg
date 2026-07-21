@@ -9,3 +9,4 @@ float64[] error
 float64[] command
 string target_type
 string[] joint_names
+bool[] joint_activation

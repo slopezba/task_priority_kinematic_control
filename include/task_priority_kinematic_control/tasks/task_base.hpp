@@ -44,6 +44,7 @@ public:
   virtual JointTrajectoryTaskStatus joint_trajectory_status() const;
   virtual bool set_gain(const std::vector<double> & gain, std::string & message);
   virtual bool set_gain_scalar(double gain, std::string & message);
+  virtual bool set_joint_activation(const std::vector<bool> & activation, std::string & message);
   virtual bool set_enabled(bool enabled);
   virtual void reset();
   virtual msg::TaskStatus build_status() const = 0;
@@ -69,6 +70,7 @@ public:
   JointTrajectoryTaskStatus joint_trajectory_status() const override;
   bool set_gain(const std::vector<double> & gain, std::string & message) override;
   bool set_gain_scalar(double gain, std::string & message) override;
+  bool set_joint_activation(const std::vector<bool> & activation, std::string & message) override;
   bool set_enabled(bool enabled) override;
   void reset() override;
   msg::TaskStatus build_status() const override;

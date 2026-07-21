@@ -10,6 +10,7 @@
 #include "task_priority_kinematic_control/srv/list_tasks.hpp"
 #include "task_priority_kinematic_control/srv/reorder_tasks.hpp"
 #include "task_priority_kinematic_control/srv/set_task_enabled.hpp"
+#include "task_priority_kinematic_control/srv/set_task_joint_activation.hpp"
 #include "task_priority_kinematic_control/srv/switch_backend.hpp"
 
 #include <control_msgs/action/follow_joint_trajectory.hpp>
@@ -87,6 +88,7 @@ private:
   rclcpp::Publisher<msg::SolverDiagnostics>::SharedPtr diagnostics_pub_;
 
   rclcpp::Service<srv::SetTaskEnabled>::SharedPtr set_task_enabled_srv_;
+  rclcpp::Service<srv::SetTaskJointActivation>::SharedPtr set_task_joint_activation_srv_;
   rclcpp::Service<srv::ReorderTasks>::SharedPtr reorder_tasks_srv_;
   rclcpp::Service<srv::ListTasks>::SharedPtr list_tasks_srv_;
   rclcpp::Service<srv::SwitchBackend>::SharedPtr switch_backend_srv_;

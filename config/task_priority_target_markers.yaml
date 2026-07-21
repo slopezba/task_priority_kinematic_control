@@ -1,6 +1,11 @@
 /task_priority_target_markers:
   ros__parameters:
     marker_scale: 0.45
+    target_task_ids:
+      - base_pose
+      - left_pose
+      - right_pose
+      - EndEffectors_Relative_pose
     base_marker_scale: 0.8
     end_effector_marker_scale: 0.10
     base_visual_scale: 1.0

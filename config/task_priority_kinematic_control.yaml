@@ -71,7 +71,9 @@ task_priority_runtime:
     tasks.joint_limits.enabled: true
     tasks.joint_limits.priority: 3.0
     tasks.joint_limits.group: global
-    tasks.joint_limits.margin: 0.1
+    tasks.joint_limits.alpha: 0.1
+    tasks.joint_limits.delta: 0.15
+    tasks.joint_limits.eps: 0.0001
     tasks.joint_limits.gain_scalar: 0.5
     tasks.joint_limits.lower_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     tasks.joint_limits.upper_limits: [3.22, 3.22, 3.49, 6.10, 3.22, 3.22, 3.49, 6.10]

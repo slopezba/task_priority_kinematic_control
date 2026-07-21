@@ -30,6 +30,12 @@
     <description>Track full pose of an end-effector.</description>
   </class>
   <class
+    name="task_priority_kinematic_control/EndEffectorsRelativePoseTask"
+    type="task_priority_kinematic_control::EndEffectorsRelativePoseTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Track the relative pose between two end-effectors.</description>
+  </class>
+  <class
     name="task_priority_kinematic_control/FramePoseTask"
     type="task_priority_kinematic_control::FramePoseTask"
     base_class_type="task_priority_kinematic_control::TaskBase">

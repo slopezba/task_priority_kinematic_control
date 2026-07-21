@@ -314,6 +314,9 @@ void TaskPriorityController::declare_task_parameters()
     auto_declare_if_missing(this, prefix + "lower_limits", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "upper_limits", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "margin", 0.1);
+    auto_declare_if_missing(this, prefix + "alpha", 0.1);
+    auto_declare_if_missing(this, prefix + "delta", 0.15);
+    auto_declare_if_missing(this, prefix + "eps", 1e-4);
     auto_declare_if_missing(this, prefix + "gain_scalar", 0.5);
     auto_declare_if_missing(this, prefix + "safe_distance", 0.05);
     auto_declare_if_missing(this, prefix + "activation_distance", 0.12);
@@ -323,6 +326,7 @@ void TaskPriorityController::declare_task_parameters()
     auto_declare_if_missing(this, prefix + "exclude_link_substrings", std::vector<std::string>{});
     auto_declare_if_missing(this, prefix + "joint_names", std::vector<std::string>{});
     auto_declare_if_missing(this, prefix + "target", std::vector<double>{});
+    auto_declare_if_missing(this, prefix + "activation", std::vector<int64_t>{});
     auto_declare_if_missing(this, prefix + "target_yaw", 0.0);
     auto_declare_if_missing(this, prefix + "goal_tolerance", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "trajectory_timeout", 0.5);
@@ -766,6 +770,19 @@ void TaskPriorityController::configure_external_interfaces()
     {
       std::scoped_lock lock(task_mutex_);
       response->success = task_manager_->set_task_enabled(request->task_id, request->enabled, response->message);
+    });
+
+  set_task_joint_activation_srv_ = get_node()->create_service<srv::SetTaskJointActivation>(
+    "/set_task_joint_activation",
+    [this](
+      const std::shared_ptr<srv::SetTaskJointActivation::Request> request,
+      std::shared_ptr<srv::SetTaskJointActivation::Response> response)
+    {
+      std::scoped_lock lock(task_mutex_);
+      response->success = task_manager_->set_task_joint_activation(
+        request->task_id,
+        request->joint_activation,
+        response->message);
     });
 
   set_task_disabled_srv_ = get_node()->create_service<srv::SetTaskDisabled>(

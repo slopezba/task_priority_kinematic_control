@@ -55,6 +55,10 @@ public:
     const std::string & task_id,
     double gain,
     std::string & message);
+  bool set_task_joint_activation(
+    const std::string & task_id,
+    const std::vector<bool> & activation,
+    std::string & message);
   void disable_all_tasks();
   bool reorder_tasks(const std::vector<std::string> & ordered_ids, std::string & message);
 

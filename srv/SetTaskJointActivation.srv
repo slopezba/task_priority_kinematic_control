@@ -1,0 +1,5 @@
+string task_id
+bool[] joint_activation
+---
+bool success
+string message

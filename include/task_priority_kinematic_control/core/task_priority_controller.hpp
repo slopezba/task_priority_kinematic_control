@@ -13,6 +13,7 @@
 #include "task_priority_kinematic_control/srv/set_task_disabled.hpp"
 #include "task_priority_kinematic_control/srv/set_task_enabled.hpp"
 #include "task_priority_kinematic_control/srv/set_task_gains.hpp"
+#include "task_priority_kinematic_control/srv/set_task_joint_activation.hpp"
 
 #include "control_msgs/action/follow_joint_trajectory.hpp"
 #include "controller_interface/controller_interface.hpp"
@@ -152,6 +153,7 @@ private:
   rclcpp::Service<srv::SetTaskDisabled>::SharedPtr set_task_disabled_srv_;
   rclcpp::Service<srv::SetSolverConfig>::SharedPtr set_solver_config_srv_;
   rclcpp::Service<srv::SetTaskGains>::SharedPtr set_task_gains_srv_;
+  rclcpp::Service<srv::SetTaskJointActivation>::SharedPtr set_task_joint_activation_srv_;
   rclcpp::Service<srv::ReorderTasks>::SharedPtr reorder_tasks_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_srv_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
