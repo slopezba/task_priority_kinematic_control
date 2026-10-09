@@ -23,6 +23,12 @@ public:
 
   FrameState get_frame_state(const std::string & frame_id) const override;
 
+  std::shared_ptr<KinematicsBackend> clone() const override;
+
+  FrameState compute_frame_state(
+    const WholeBodyState & state,
+    const std::string & frame_id) const override;
+
   Eigen::Isometry3d get_relative_transform(
     const std::string & from_frame,
     const std::string & to_frame) const override;
@@ -44,7 +50,7 @@ private:
     const std::string & base_frame,
     const std::string & tip_frame) const;
   Eigen::VectorXd q_for_chain(const ChainData & chain, const WholeBodyState & state) const;
-  FrameState compute_frame_state(
+  FrameState compute_chain_frame_state(
     const std::string & frame_id,
     const ChainData & chain,
     const WholeBodyState & state) const;

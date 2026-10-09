@@ -25,6 +25,18 @@ FrameState PinocchioKinematicsBackend::get_frame_state(const std::string &) cons
   throw std::runtime_error("Pinocchio backend is not implemented yet");
 }
 
+std::shared_ptr<KinematicsBackend> PinocchioKinematicsBackend::clone() const
+{
+  return std::make_shared<PinocchioKinematicsBackend>(*this);
+}
+
+FrameState PinocchioKinematicsBackend::compute_frame_state(
+  const WholeBodyState &,
+  const std::string &) const
+{
+  throw std::runtime_error("Pinocchio backend is not implemented yet");
+}
+
 Eigen::Isometry3d PinocchioKinematicsBackend::get_relative_transform(
   const std::string &,
   const std::string &) const

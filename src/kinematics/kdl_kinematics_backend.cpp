@@ -297,7 +297,7 @@ void KDLKinematicsBackend::update(const WholeBodyState & state)
   cached_frames_.emplace(model_.base_frame(), base_state);
   for (const auto & entry : chains_) {
     const std::string & frame_id = entry.first;
-    cached_frames_.emplace(frame_id, compute_frame_state(frame_id, entry.second, state));
+    cached_frames_.emplace(frame_id, compute_chain_frame_state(frame_id, entry.second, state));
   }
 }
 
@@ -308,6 +308,37 @@ FrameState KDLKinematicsBackend::get_frame_state(const std::string & frame_id) c
     throw std::runtime_error("Requested frame is not available in the KDL backend cache: " + frame_id);
   }
   return it->second;
+}
+
+std::shared_ptr<KinematicsBackend> KDLKinematicsBackend::clone() const
+{
+  return std::make_shared<KDLKinematicsBackend>(*this);
+}
+
+FrameState KDLKinematicsBackend::compute_frame_state(
+  const WholeBodyState & state,
+  const std::string & frame_id) const
+{
+  if (frame_id == model_.base_frame()) {
+    FrameState base_state;
+    base_state.pose = base_pose_from_state(state);
+    base_state.jacobian = Eigen::MatrixXd::Zero(6, model_.total_dofs());
+    Eigen::Matrix<double, 6, 6> base_jacobian = Eigen::Matrix<double, 6, 6>::Zero();
+    base_jacobian.topLeftCorner<3, 3>() = Eigen::Matrix3d::Identity();
+    base_jacobian.bottomRightCorner<3, 3>() = Eigen::Matrix3d::Identity();
+    for (size_t i = 0; i < model_.active_base_dofs().size(); ++i) {
+      const int dof = model_.active_base_dofs()[i];
+      if (dof >= 0 && dof < 6) {
+        base_state.jacobian.col(static_cast<Eigen::Index>(i)) = base_jacobian.col(dof);
+      }
+    }
+    return base_state;
+  }
+  const auto it = chains_.find(frame_id);
+  if (it == chains_.end()) {
+    throw std::runtime_error("Requested frame is not available in the KDL backend model: " + frame_id);
+  }
+  return compute_chain_frame_state(frame_id, it->second, state);
 }
 
 Eigen::Isometry3d KDLKinematicsBackend::get_relative_transform(
@@ -373,7 +404,7 @@ Eigen::VectorXd KDLKinematicsBackend::q_for_chain(
   return q;
 }
 
-FrameState KDLKinematicsBackend::compute_frame_state(
+FrameState KDLKinematicsBackend::compute_chain_frame_state(
   const std::string &,
   const ChainData & chain,
   const WholeBodyState & state) const

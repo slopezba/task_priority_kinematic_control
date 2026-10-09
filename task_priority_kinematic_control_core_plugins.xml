@@ -36,6 +36,12 @@
     <description>Track the relative pose between two end-effectors.</description>
   </class>
   <class
+    name="task_priority_kinematic_control/EndEffectorPlanRelativePoseTask"
+    type="task_priority_kinematic_control::EndEffectorPlanRelativePoseTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Plan to a good relative-pose self-motion region, then servo the relative pose.</description>
+  </class>
+  <class
     name="task_priority_kinematic_control/FramePoseTask"
     type="task_priority_kinematic_control::FramePoseTask"
     base_class_type="task_priority_kinematic_control::TaskBase">

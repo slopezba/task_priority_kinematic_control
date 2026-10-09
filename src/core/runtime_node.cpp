@@ -173,6 +173,59 @@ void RuntimeNode::declare_parameters()
     declare_if_missing<std::vector<double>>(*this, prefix + "goal_tolerance", {});
     declare_if_missing<double>(*this, prefix + "trajectory_timeout", 0.5);
     declare_if_missing<bool>(*this, prefix + "hold_last_point", true);
+    declare_if_missing<double>(*this, prefix + "relative_pose_tolerance", 1.0e-4);
+    declare_if_missing<double>(*this, prefix + "planning_timeout", 5.0);
+    declare_if_missing<double>(*this, prefix + "move_gain", 0.8);
+    declare_if_missing<double>(*this, prefix + "move_goal_tolerance", 0.04);
+    declare_if_missing<double>(*this, prefix + "blend_duration", 2.0);
+    declare_if_missing<double>(*this, prefix + "max_joint_velocity", 0.25);
+    declare_if_missing<double>(*this, prefix + "min_sigma", 0.03);
+    declare_if_missing<double>(*this, prefix + "min_joint_margin", 0.02);
+    declare_if_missing<double>(*this, prefix + "min_collision_margin", 0.04);
+    declare_if_missing<double>(*this, prefix + "nullspace_probe_radius", 0.12);
+    declare_if_missing<double>(*this, prefix + "nullspace_probe_steps", 5.0);
+    declare_if_missing<double>(*this, prefix + "reprojection_iterations", 20.0);
+    declare_if_missing<double>(*this, prefix + "reprojection_tolerance", 1.0e-4);
+    declare_if_missing<double>(*this, prefix + "preferred_joint_margin", 0.08);
+    declare_if_missing<bool>(*this, prefix + "debug", false);
+    declare_if_missing<bool>(*this, prefix + "fallback_to_servo_on_plan_failure", true);
+    declare_if_missing<bool>(*this, prefix + "global_search.enabled", false);
+    declare_if_missing<double>(*this, prefix + "global_search.random_starts", 128.0);
+    declare_if_missing<double>(*this, prefix + "global_search.local_perturbation_starts", 12.0);
+    declare_if_missing<double>(*this, prefix + "global_search.seed", 7.0);
+    declare_if_missing<double>(*this, prefix + "global_search.projection_iterations", 20.0);
+    declare_if_missing<double>(*this, prefix + "global_search.projection_tolerance", 1.0e-4);
+    declare_if_missing<double>(*this, prefix + "global_search.solution_tolerance", 5.0e-4);
+    declare_if_missing<double>(*this, prefix + "global_search.explore_threshold", 1.0e-4);
+    declare_if_missing<double>(*this, prefix + "global_search.deduplicate_radius", 0.004);
+    declare_if_missing<double>(*this, prefix + "global_search.connect_radius", 1.25);
+    declare_if_missing<double>(*this, prefix + "global_search.max_edge_projection_distance", 0.08);
+    declare_if_missing<double>(*this, prefix + "global_search.max_edge_neighbors", 2.0);
+    declare_if_missing<double>(*this, prefix + "global_search.path_check_steps", 2.0);
+    declare_if_missing<double>(*this, prefix + "global_search.max_components_to_plan", 2.0);
+    declare_if_missing<double>(*this, prefix + "global_search.polar_angular_samples", 8.0);
+    declare_if_missing<double>(*this, prefix + "global_search.polar_radial_step", 0.06);
+    declare_if_missing<double>(*this, prefix + "global_search.polar_max_radius", 0.36);
+    declare_if_missing<double>(*this, prefix + "global_search.max_charts_per_component", 3.0);
+    declare_if_missing<double>(*this, prefix + "global_search.max_projector_change", 0.35);
+    declare_if_missing<double>(*this, prefix + "global_search.atlas_max_charts_per_seed", 3.0);
+    declare_if_missing<double>(*this, prefix + "global_search.atlas_max_total_charts", 160.0);
+    declare_if_missing<double>(*this, prefix + "global_search.atlas_step", 0.08);
+    declare_if_missing<double>(*this, prefix + "global_search.atlas_neighbor_radius", 0.12);
+    declare_if_missing<bool>(*this, prefix + "global_search.projection_trace.enabled", true);
+    declare_if_missing<double>(*this, prefix + "global_search.projection_trace.seed_index", 0.0);
+    declare_if_missing<std::string>(
+      *this,
+      prefix + "global_search.debug_dump_path",
+      "/tmp/end_effector_plan_relative_pose_manifold_debug.txt");
+    declare_if_missing<bool>(*this, prefix + "external_planner.enabled", false);
+    declare_if_missing<std::string>(
+      *this,
+      prefix + "external_planner.action_name",
+      "/cirtesub/manipulation/plan_bimanual_joint_trajectory");
+    declare_if_missing<double>(*this, prefix + "external_planner.wait_timeout", 1.0);
+    declare_if_missing<double>(*this, prefix + "external_planner.result_timeout", 5.0);
+    declare_if_missing<double>(*this, prefix + "external_planner.goal_tolerance", 0.02);
   }
 }
 

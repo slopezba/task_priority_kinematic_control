@@ -24,6 +24,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(sura_msgs REQUIRED)
+find_package(sura_manipulation_actions REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(urdf REQUIRED)
 find_package(visualization_msgs REQUIRED)
@@ -61,6 +62,7 @@ add_library(${core_target} SHARED
   src/tasks/end_effector_orientation_task.cpp
   src/tasks/end_effector_pose_task.cpp
   src/tasks/end_effectors_relative_pose_task.cpp
+  src/tasks/end_effector_plan_relative_pose_task.cpp
   src/tasks/frame_pose_task.cpp
   src/tasks/joint_nominal_task.cpp
   src/tasks/joint_trajectory_task.cpp
@@ -95,6 +97,7 @@ ament_target_dependencies(${core_target}
   std_msgs
   std_srvs
   sura_msgs
+  sura_manipulation_actions
   trajectory_msgs
   urdf
 )
@@ -196,6 +199,12 @@ if(BUILD_TESTING)
   if(TARGET test_end_effectors_relative_pose_task)
     target_link_libraries(test_end_effectors_relative_pose_task ${core_target})
     ament_target_dependencies(test_end_effectors_relative_pose_task rclcpp)
+  endif()
+
+  ament_add_gtest(test_end_effector_plan_relative_pose_task test/test_end_effector_plan_relative_pose_task.cpp)
+  if(TARGET test_end_effector_plan_relative_pose_task)
+    target_link_libraries(test_end_effector_plan_relative_pose_task ${core_target})
+    ament_target_dependencies(test_end_effector_plan_relative_pose_task rclcpp)
   endif()
 endif()
 

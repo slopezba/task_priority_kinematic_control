@@ -6,6 +6,7 @@
 #include <rclcpp/logger.hpp>
 
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace task_priority_kinematic_control
@@ -24,6 +25,18 @@ public:
   virtual void update(const WholeBodyState & state) = 0;
 
   virtual FrameState get_frame_state(const std::string & frame_id) const = 0;
+
+  virtual std::shared_ptr<KinematicsBackend> clone() const
+  {
+    return nullptr;
+  }
+
+  virtual FrameState compute_frame_state(
+    const WholeBodyState &,
+    const std::string & frame_id) const
+  {
+    throw std::runtime_error("Backend cannot evaluate arbitrary frame state: " + frame_id);
+  }
 
   virtual Eigen::Isometry3d get_relative_transform(
     const std::string & from_frame,

@@ -34,6 +34,7 @@ task_priority_controller:
     task_ids:
       - self_collision_avoidance
       - EndEffectors_Relative_pose
+      - ee_plan_relative_pose
       - left_pose
       - right_pose
       - joint_limits
@@ -77,6 +78,67 @@ task_priority_controller:
     tasks.EndEffectors_Relative_pose.controlled_frame: cirtesub/alpha_right/ee_base_link
     tasks.EndEffectors_Relative_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
     tasks.EndEffectors_Relative_pose.activation: [1, 1, 1, 1, 1, 1]
+
+    tasks.ee_plan_relative_pose.plugin: task_priority_kinematic_control/EndEffectorPlanRelativePoseTask
+    tasks.ee_plan_relative_pose.enabled: false
+    tasks.ee_plan_relative_pose.priority: 7.0
+    tasks.ee_plan_relative_pose.group: bimanual
+    tasks.ee_plan_relative_pose.reference_frame: cirtesub/alpha_left/ee_base_link
+    tasks.ee_plan_relative_pose.controlled_frame: cirtesub/alpha_right/ee_base_link
+    tasks.ee_plan_relative_pose.gain: [0.4, 0.4, 0.4, 0.4, 0.4, 0.4]
+    tasks.ee_plan_relative_pose.activation: [1, 1, 1, 1, 1, 1]
+    tasks.ee_plan_relative_pose.lower_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    tasks.ee_plan_relative_pose.upper_limits: [3.22, 3.22, 3.49, 6.10, 3.22, 3.22, 3.49, 6.10]
+    tasks.ee_plan_relative_pose.planning_timeout: 12.0
+    tasks.ee_plan_relative_pose.move_gain: 0.8
+    tasks.ee_plan_relative_pose.move_goal_tolerance: 0.04
+    tasks.ee_plan_relative_pose.blend_duration: 2.0
+    tasks.ee_plan_relative_pose.max_joint_velocity: 0.25
+    tasks.ee_plan_relative_pose.weights.sigma: 1.0
+    tasks.ee_plan_relative_pose.weights.collision: 2.0
+    tasks.ee_plan_relative_pose.weights.limits: 1.0
+    tasks.ee_plan_relative_pose.weights.room: 1.5
+    tasks.ee_plan_relative_pose.weights.smoothness: 0.5
+    tasks.ee_plan_relative_pose.weights.current_distance: 1.2
+    tasks.ee_plan_relative_pose.weights.curvature: 0.5
+    tasks.ee_plan_relative_pose.weights.boundary: 0.15
+    tasks.ee_plan_relative_pose.weights.support: 0.15
+    tasks.ee_plan_relative_pose.weights.relative_error: 5.0
+    tasks.ee_plan_relative_pose.relative_pose_tolerance: 0.03
+    tasks.ee_plan_relative_pose.min_sigma: 0.02
+    tasks.ee_plan_relative_pose.min_joint_margin: 0.0
+    tasks.ee_plan_relative_pose.min_collision_margin: 0.0
+    tasks.ee_plan_relative_pose.nullspace_probe_radius: 0.12
+    tasks.ee_plan_relative_pose.nullspace_probe_steps: 5.0
+    tasks.ee_plan_relative_pose.reprojection_iterations: 20.0
+    tasks.ee_plan_relative_pose.global_search.enabled: true
+    tasks.ee_plan_relative_pose.global_search.random_starts: 64.0
+    tasks.ee_plan_relative_pose.global_search.local_perturbation_starts: 12.0
+    tasks.ee_plan_relative_pose.global_search.seed: 7.0
+    tasks.ee_plan_relative_pose.global_search.projection_iterations: 20.0
+    tasks.ee_plan_relative_pose.global_search.deduplicate_radius: 0.004
+    tasks.ee_plan_relative_pose.global_search.connect_radius: 1.25
+    tasks.ee_plan_relative_pose.global_search.max_edge_projection_distance: 0.08
+    tasks.ee_plan_relative_pose.global_search.max_edge_neighbors: 2.0
+    tasks.ee_plan_relative_pose.global_search.path_check_steps: 2.0
+    tasks.ee_plan_relative_pose.global_search.max_components_to_plan: 2.0
+    tasks.ee_plan_relative_pose.global_search.polar_angular_samples: 8.0
+    tasks.ee_plan_relative_pose.global_search.polar_radial_step: 0.06
+    tasks.ee_plan_relative_pose.global_search.polar_max_radius: 0.36
+    tasks.ee_plan_relative_pose.global_search.max_charts_per_component: 3.0
+    tasks.ee_plan_relative_pose.global_search.max_projector_change: 0.35
+    tasks.ee_plan_relative_pose.global_search.atlas_max_charts_per_seed: 3.0
+    tasks.ee_plan_relative_pose.global_search.atlas_max_total_charts: 80.0
+    tasks.ee_plan_relative_pose.global_search.atlas_step: 0.08
+    tasks.ee_plan_relative_pose.global_search.atlas_neighbor_radius: 0.12
+    tasks.ee_plan_relative_pose.global_search.projection_trace.enabled: false
+    tasks.ee_plan_relative_pose.preferred_joint_margin: 0.08
+    tasks.ee_plan_relative_pose.debug: false
+    tasks.ee_plan_relative_pose.fallback_to_servo_on_plan_failure: true
+    tasks.ee_plan_relative_pose.external_planner.enabled: true
+    tasks.ee_plan_relative_pose.external_planner.action_name: /cirtesub/manipulation/plan_bimanual_joint_trajectory
+    tasks.ee_plan_relative_pose.external_planner.wait_timeout: 1.0
+    tasks.ee_plan_relative_pose.external_planner.result_timeout: 4.0
 
     tasks.joint_limits.plugin: task_priority_kinematic_control/JointLimitsTask
     tasks.joint_limits.enabled: true
