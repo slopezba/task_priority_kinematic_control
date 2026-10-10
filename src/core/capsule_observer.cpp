@@ -188,6 +188,10 @@ void declare_collision_parameters(
     };
   declare("safe_distance", rclcpp::ParameterValue(0.05));
   declare("activation_distance", rclcpp::ParameterValue(0.12));
+  rclcpp::Parameter activation;
+  parameters->get_parameter(prefix + "activation_distance", activation);
+  declare("release_distance", rclcpp::ParameterValue(activation.as_double() + 0.01));
+  declare("eps", rclcpp::ParameterValue(0.0001));
   declare("max_repulsive_velocity", rclcpp::ParameterValue(0.08));
   declare("parallel_epsilon", rclcpp::ParameterValue(1e-8));
   declare("segment_length_epsilon", rclcpp::ParameterValue(1e-9));

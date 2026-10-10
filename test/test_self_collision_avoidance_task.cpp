@@ -38,6 +38,21 @@ public:
   std::map<std::string,FrameState> frames;
   std::vector<CollisionCapsule> old_capsules;
 };
+class CertifiedBackend : public Backend
+{
+public:
+  bool frame_joint_dependencies(const std::string & frame, std::vector<size_t> & indices) const override
+  {
+    ++dependency_calls;
+    indices.clear();
+    const auto it = dependencies.find(frame);
+    if (it == dependencies.end()) {return false;}
+    indices = it->second;
+    return true;
+  }
+  std::map<std::string, std::vector<size_t>> dependencies;
+  mutable size_t dependency_calls = 0;
+};
 std::shared_ptr<WholeBodyModel> model()
 {
   auto m=std::make_shared<WholeBodyModel>();
@@ -107,7 +122,7 @@ TEST(SelfCollisionPlanes, ActivationContactCrossingSaturationAndRecovery)
   EXPECT_EQ(task.checked_pairs().size(), 0u); EXPECT_EQ(task.checked_plane_pairs().size(), 1u);
   auto out = task.update({}, *b);
   ASSERT_EQ(out.jacobian.rows(), 1); EXPECT_TRUE(out.active); EXPECT_FALSE(out.stop_arm_motion);
-  EXPECT_NEAR(out.desired_velocity(0), 0.06, 1e-12); EXPECT_DOUBLE_EQ(out.error(0), 0);
+  EXPECT_NEAR(out.desired_velocity(0), 0.07, 1e-12); EXPECT_DOUBLE_EQ(out.error(0), 0);
   EXPECT_NEAR(out.jacobian(0, 6), 1, 1e-12);
   EXPECT_EQ(task.collision_pair_name(0), "a,plane:guard");
   EXPECT_NE(task.build_status().status_message.find("closest_pair=a,plane:guard"), std::string::npos);
@@ -217,7 +232,9 @@ TEST(SelfCollisionPlanes, ClippedTaskJacobianIncludesTangentialEndpointMotion)
   scalar(p, "planes.guard.position", 0.0);
   p["planes.guard.bounds_min"] = rclcpp::Parameter("planes.guard.bounds_min", std::vector<double>{-.2, -.3});
   p["planes.guard.bounds_max"] = rclcpp::Parameter("planes.guard.bounds_max", std::vector<double>{.2, .3});
-  auto b = backend(); b->frames["A"].pose.translation() = V(.1, -.5, 0);
+  auto b = std::make_shared<CertifiedBackend>(); b->frames = backend()->frames;
+  b->dependencies = {{"base", {}}, {"A", {0}}, {"B", {1}}, {"C", {4}}, {"D", {5}}};
+  b->frames["A"].pose.translation() = V(.1, -.5, 0);
   b->frames["B"].pose.translation() = V(.2, .5, 0);
   for (const auto & name : {"A", "B"}) {
     b->frames[name].jacobian.block<3, 3>(0, 3) = -skew(b->frames[name].pose.translation());
@@ -289,7 +306,192 @@ TEST(SelfCollisionTask, SurfaceClearanceActivationAndFixedDimensions)
   // Repulsion starts before safe_distance is violated.
   for(const auto & name : {"C","D"}) {b->frames[name].pose.translation().z()=0.18;}
   task.update_into({},*b,out);
-  EXPECT_TRUE(out.active); EXPECT_NEAR(out.desired_velocity(0),0.02,1e-12); EXPECT_DOUBLE_EQ(out.error(0),0);
+  EXPECT_TRUE(out.active); EXPECT_NEAR(out.desired_velocity(0),0.03,1e-12); EXPECT_DOUBLE_EQ(out.error(0),0);
+}
+TEST(SelfCollisionTask, ExactHysteresisThresholdsForCapsulesAndPlanes)
+{
+  // Binary-exact geometry makes equality at both thresholds unambiguous.
+  for (const bool plane : {false, true}) {
+    SCOPED_TRACE(plane ? "plane" : "capsules");
+    auto b = backend(); auto p = plane ? plane_parameters() : parameters();
+    scalar(p, "activation_distance", .125); scalar(p, "release_distance", .25);
+    constexpr double tolerance = 1.0 / 1024;
+    scalar(p, "eps", tolerance);
+    scalar(p, "capsules.a.radius", .03125); scalar(p, "capsules.b.radius", .03125);
+    if (plane) {scalar(p, "planes.guard.position", 0);}
+    const auto set_clearance = [&](double clearance) {
+        for (const auto & name : (plane ? std::vector<std::string>{"A", "B"} :
+          std::vector<std::string>{"C", "D"})) {
+          b->frames[name].pose.translation().z() = clearance + (plane ? .03125 : .0625);
+        }
+      };
+    SelfCollisionAvoidanceTask task; configure(task, p, b);
+    set_clearance(.125); EXPECT_FALSE(task.update({}, *b).active);
+    set_clearance(.125 - tolerance); EXPECT_TRUE(task.update({}, *b).active);
+    set_clearance(.1875); auto out = task.update({}, *b);
+    EXPECT_TRUE(out.active); EXPECT_NEAR(out.desired_velocity(0), .0625, 1e-12);
+    WholeBodyCommand command; command.generalized_velocity = Eigen::VectorXd::Zero(14);
+    task.observe_command(command, 1); const auto * snapshot = task.consume_snapshot(); ASSERT_NE(snapshot, nullptr);
+    EXPECT_TRUE(snapshot->capsules[0].highlighted);
+    if (!plane) {EXPECT_TRUE(snapshot->capsules[1].highlighted);}
+    set_clearance(.25 - 1.5 * tolerance); EXPECT_TRUE(task.update({}, *b).active);
+    set_clearance(.25 - tolerance); out = task.update({}, *b);
+    EXPECT_FALSE(out.active); EXPECT_DOUBLE_EQ(out.jacobian.norm(), 0);
+    EXPECT_DOUBLE_EQ(out.desired_velocity.norm(), 0); EXPECT_DOUBLE_EQ(out.error.norm(), 0);
+    task.observe_command(command, 2); snapshot = task.consume_snapshot(); ASSERT_NE(snapshot, nullptr);
+    EXPECT_FALSE(snapshot->capsules[0].highlighted); EXPECT_FALSE(snapshot->capsules[1].highlighted);
+    set_clearance(.1875); EXPECT_FALSE(task.update({}, *b).active);
+    set_clearance(.125 - tolerance); EXPECT_TRUE(task.update({}, *b).active);
+  }
+}
+
+TEST(SelfCollisionTask, ReleaseOnePairRestoresLowerTaskWhileAnotherPairStaysActive)
+{
+  auto b = backend(); auto p = plane_parameters();
+  scalar(p, "planes.guard.position", 0);
+  p.erase("planes.guard.checked_capsules");
+  for (const auto & name : {"A", "B"}) {b->frames[name].pose.translation().z() = .05;}
+  SelfCollisionAvoidanceTask task; configure(task, p, b);
+  auto avoidance = task.update({}, *b); ASSERT_TRUE(avoidance.active);
+  ASSERT_EQ(avoidance.jacobian.rows(), 2);
+  EXPECT_NE(task.build_status().status_message.find("active_joint_count=2"), std::string::npos);
+  TaskComputation lower;
+  lower.active = true; lower.jacobian = Eigen::MatrixXd::Zero(1, 14); lower.jacobian(0, 6) = 1;
+  lower.desired_velocity = Eigen::VectorXd::Constant(1, .2);
+  HierarchySolver solver; solver.configure(14); solver.set_method(SolverMethod::kPinv);
+  EXPECT_NEAR(solver.solve({avoidance, lower}).generalized_velocity(6), .08, 1e-12);
+  for (const auto & name : {"A", "B"}) {b->frames[name].pose.translation().z() = .2;}
+  avoidance = task.update({}, *b); ASSERT_TRUE(avoidance.active);
+  EXPECT_DOUBLE_EQ(avoidance.jacobian.row(0).norm(), 0);
+  EXPECT_DOUBLE_EQ(avoidance.desired_velocity(0), 0); EXPECT_DOUBLE_EQ(avoidance.error(0), 0);
+  EXPECT_GT(avoidance.jacobian.row(1).norm(), 0);
+  EXPECT_NEAR(solver.solve({avoidance, lower}).generalized_velocity(6), .2, 1e-12);
+  EXPECT_NE(task.build_status().status_message.find("active_pairs=1"), std::string::npos);
+  EXPECT_NE(task.build_status().status_message.find("active_joint_count=1"), std::string::npos);
+}
+
+TEST(SelfCollisionTask, StatesResetOnEnableResetReconfigureAndInvalidGeometry)
+{
+  auto b = backend(); auto p = plane_parameters(); SelfCollisionAvoidanceTask task; configure(task, p, b);
+  const auto band = [&] {
+      for (const auto & name : {"A", "B"}) {b->frames[name].pose.translation().z() = .065;}
+    }; // .125 clearance: above entry, below release.
+  const auto enter = [&] {
+      for (const auto & name : {"A", "B"}) {b->frames[name].pose.translation().z() = 0;}
+      EXPECT_TRUE(task.update({}, *b).active); band(); EXPECT_TRUE(task.update({}, *b).active);
+    };
+  enter(); task.reset(); EXPECT_FALSE(task.update({}, *b).active);
+  enter(); task.set_enabled(false); EXPECT_FALSE(task.update({}, *b).active);
+  task.set_enabled(true); EXPECT_FALSE(task.update({}, *b).active);
+  enter(); configure(task, p, b); EXPECT_FALSE(task.update({}, *b).active);
+  enter(); b->frames["A"].jacobian(0, 6) = std::numeric_limits<double>::quiet_NaN();
+  const auto fault = task.update({}, *b); EXPECT_TRUE(fault.stop_arm_motion);
+  EXPECT_DOUBLE_EQ(fault.jacobian.norm(), 0); EXPECT_DOUBLE_EQ(fault.desired_velocity.norm(), 0);
+  b->frames["A"].jacobian(0, 6) = 0;
+  auto recovered = task.update({}, *b); EXPECT_FALSE(recovered.stop_arm_motion); EXPECT_FALSE(recovered.active);
+  enter();
+}
+
+TEST(SelfCollisionTask, MixedRowsRetainOrderAndReleaseIndependently)
+{
+  auto b = backend(); auto p = plane_parameters(); p.erase("ignored_collision_pairs");
+  SelfCollisionAvoidanceTask task; configure(task, p, b);
+  auto out = task.update({}, *b); ASSERT_EQ(out.jacobian.rows(), 2); ASSERT_TRUE(out.active);
+  EXPECT_EQ(task.collision_pair_name(0), "a,b"); EXPECT_EQ(task.collision_pair_name(1), "a,plane:guard");
+  EXPECT_GT(out.desired_velocity(0), 0); EXPECT_GT(out.desired_velocity(1), 0);
+  for (const auto & name : {"C", "D"}) {b->frames[name].pose.translation().z() = .25;}
+  out = task.update({}, *b); EXPECT_TRUE(out.active);
+  EXPECT_DOUBLE_EQ(out.jacobian.row(0).norm(), 0);
+  EXPECT_DOUBLE_EQ(out.desired_velocity(0), 0); EXPECT_DOUBLE_EQ(out.error(0), 0);
+  EXPECT_GT(out.jacobian.row(1).norm(), 0); EXPECT_GT(out.desired_velocity(1), 0);
+}
+
+TEST(SelfCollisionPlanes, LeavingFiniteRegionClearsLatchAndMarkersFollowHysteresis)
+{
+  auto b = backend(); SelfCollisionAvoidanceTask task; configure(task, plane_parameters(), b);
+  EXPECT_TRUE(task.update({}, *b).active);
+  for (const auto & name : {"A", "B"}) {b->frames[name].pose.translation().z() = .065;}
+  EXPECT_TRUE(task.update({}, *b).active);
+  WholeBodyCommand command; command.generalized_velocity = Eigen::VectorXd::Zero(14);
+  task.observe_command(command, 1); const auto * snapshot = task.consume_snapshot(); ASSERT_NE(snapshot, nullptr);
+  EXPECT_TRUE(snapshot->capsules[0].highlighted); EXPECT_TRUE(snapshot->planes[0].highlighted);
+  const auto red = capsule_markers(task.capsules(), *snapshot, "base", 1e-9, task.planes());
+  EXPECT_FLOAT_EQ(red.markers[0].color.r, 1); EXPECT_FLOAT_EQ(red.markers[0].color.b, 0);
+  EXPECT_FLOAT_EQ(red.markers.back().color.r, 1); EXPECT_FLOAT_EQ(red.markers.back().color.g, 0);
+  for (const auto & name : {"A", "B"}) {b->frames[name].pose.translation().y() = .6;}
+  auto out = task.update({}, *b); EXPECT_FALSE(out.active); EXPECT_DOUBLE_EQ(out.jacobian.norm(), 0);
+  for (const auto & name : {"A", "B"}) {b->frames[name].pose.translation().y() = 0;}
+  EXPECT_FALSE(task.update({}, *b).active); // Re-entering the footprint in the hysteresis band.
+  task.observe_command(command, 2); snapshot = task.consume_snapshot(); ASSERT_NE(snapshot, nullptr);
+  EXPECT_FALSE(snapshot->capsules[0].highlighted); EXPECT_FALSE(snapshot->planes[0].highlighted);
+  const auto clear = capsule_markers(task.capsules(), *snapshot, "base", 1e-9, task.planes());
+  EXPECT_GT(clear.markers.back().color.g, 0);
+  // Releasing by distance also removes the red marker while still inside the footprint.
+  for (const auto & name : {"A", "B"}) {b->frames[name].pose.translation().z() = 0;}
+  EXPECT_TRUE(task.update({}, *b).active);
+  for (const auto & name : {"A", "B"}) {b->frames[name].pose.translation().z() = .07;}
+  EXPECT_FALSE(task.update({}, *b).active);
+  task.observe_command(command, 3); snapshot = task.consume_snapshot(); ASSERT_NE(snapshot, nullptr);
+  EXPECT_FALSE(snapshot->planes[0].highlighted);
+}
+
+TEST(SelfCollisionTask, CertifiedMasksRemoveUnrelatedAndSharedJointsWithoutMagnitudeFiltering)
+{
+  auto b = std::make_shared<CertifiedBackend>(); b->frames = backend()->frames;
+  // Joint 2 is common to all frames; joint 3 is unrelated. Duplicates are harmless.
+  b->dependencies = {{"base", {}}, {"A", {0, 2, 2}}, {"B", {1, 2}},
+    {"C", {4, 2}}, {"D", {5, 2}}};
+  b->frames["C"].jacobian(2, 8) = 1; // Synthetic noise on a shared ancestor.
+  b->frames["C"].jacobian(2, 9) = 1; // Synthetic noise on an unrelated joint.
+  b->frames["C"].jacobian(2, 10) = 1e-14; // Valid, small coefficient must survive.
+  SelfCollisionAvoidanceTask task; configure(task, parameters(), b);
+  const size_t queries = b->dependency_calls;
+  const auto out = task.update({}, *b); ASSERT_TRUE(out.active);
+  EXPECT_EQ(b->dependency_calls, queries);
+  EXPECT_DOUBLE_EQ(out.jacobian.leftCols(6).norm(), 0);
+  EXPECT_DOUBLE_EQ(out.jacobian(0, 8), 0); EXPECT_DOUBLE_EQ(out.jacobian(0, 9), 0);
+  EXPECT_NEAR(out.jacobian(0, 10), .5e-14, 1e-28);
+  EXPECT_NE(task.build_status().status_message.find("active_joint_count=4"), std::string::npos);
+  TaskComputation lower; lower.active = true;
+  lower.jacobian = Eigen::MatrixXd::Zero(2, 14); lower.jacobian(0, 8) = 1; lower.jacobian(1, 9) = 1;
+  lower.desired_velocity = Eigen::VectorXd::Constant(2, .2);
+  HierarchySolver solver; solver.configure(14); solver.set_method(SolverMethod::kPinv);
+  const auto free_joints = solver.solve({out, lower});
+  EXPECT_NEAR(free_joints.generalized_velocity(8), .2, 1e-12);
+  EXPECT_NEAR(free_joints.generalized_velocity(9), .2, 1e-12);
+  // One uncertified frame requires a complete articulated fallback, not a partial mask.
+  b->dependencies.erase("D"); configure(task, parameters(), b);
+  const auto fallback = task.update({}, *b);
+  EXPECT_NEAR(fallback.jacobian(0, 8), .5, 1e-12); EXPECT_NEAR(fallback.jacobian(0, 9), .5, 1e-12);
+  // The original mock backend has no dependency API and preserves its distance derivative.
+  auto unsupported = backend(); SelfCollisionAvoidanceTask original; configure(original, parameters(), unsupported);
+  const auto full = original.update({}, *unsupported);
+  EXPECT_NEAR(full.jacobian(0, 6), -.5, 1e-12); EXPECT_NEAR(full.jacobian(0, 11), .5, 1e-12);
+  b->dependencies["A"] = {8}; EXPECT_THROW(configure(task, parameters(), b), std::invalid_argument);
+}
+
+TEST(SelfCollisionTask, ZeroJacobianPairStaysActiveAndReportsDeficit)
+{
+  auto b = std::make_shared<CertifiedBackend>(); b->frames = backend()->frames;
+  b->dependencies = {{"base", {}}, {"A", {0}}, {"B", {0}}, {"C", {0}}, {"D", {0}}};
+  SelfCollisionAvoidanceTask task; configure(task, parameters(), b);
+  const auto out = task.update({}, *b); EXPECT_TRUE(out.active); EXPECT_FALSE(out.stop_arm_motion);
+  EXPECT_DOUBLE_EQ(out.jacobian.norm(), 0); EXPECT_NEAR(out.desired_velocity(0), .08, 1e-12);
+  WholeBodyCommand command; command.generalized_velocity = Eigen::VectorXd::Zero(14);
+  task.observe_command(command, 1); const auto * snapshot = task.consume_snapshot(); ASSERT_NE(snapshot, nullptr);
+  EXPECT_EQ(snapshot->metrics.active_pairs, 1u); EXPECT_EQ(snapshot->metrics.zero_jacobian_pairs, 1u);
+  EXPECT_EQ(snapshot->metrics.active_joint_count, 0u);
+  EXPECT_NEAR(snapshot->metrics.max_velocity_deficit, .08, 1e-12);
+  EXPECT_TRUE(snapshot->capsules[0].highlighted);
+  for (const auto & name : {"C", "D"}) {b->frames[name].pose.translation().z() = .205;}
+  EXPECT_TRUE(task.update({}, *b).active);
+  task.observe_command(command, 2); snapshot = task.consume_snapshot(); ASSERT_NE(snapshot, nullptr);
+  EXPECT_EQ(snapshot->metrics.zero_jacobian_pairs, 1u);
+  EXPECT_NEAR(snapshot->metrics.max_velocity_deficit, .005, 1e-12);
+  for (const auto & name : {"C", "D"}) {b->frames[name].pose.translation().z() = .21;}
+  EXPECT_FALSE(task.update({}, *b).active);
+  task.observe_command(command, 3); snapshot = task.consume_snapshot(); ASSERT_NE(snapshot, nullptr);
+  EXPECT_EQ(snapshot->metrics.zero_jacobian_pairs, 0u); EXPECT_DOUBLE_EQ(snapshot->metrics.max_velocity_deficit, 0);
 }
 TEST(SelfCollisionTask, InterpolatedDistanceJacobianMatchesFiniteDifferences)
 {
@@ -374,6 +576,11 @@ TEST(SelfCollisionTask, InvalidConfigurationIsRejected)
   const std::vector<std::pair<std::string,double>> invalid={
     {"capsules.a.radius",0},{"capsules.a.radius",-1},{"capsules.a.radius",std::numeric_limits<double>::infinity()},
     {"safe_distance",-1},{"safe_distance",0.2},{"gain_scalar",-1},
+    {"release_distance",.12},{"release_distance",.11},
+    {"release_distance",std::numeric_limits<double>::infinity()},
+    {"release_distance",std::numeric_limits<double>::quiet_NaN()},
+    {"eps",0},{"eps",-.001},{"eps",.02},{"eps",std::numeric_limits<double>::quiet_NaN()},
+    {"eps",std::numeric_limits<double>::infinity()},
     {"gain_scalar",std::numeric_limits<double>::quiet_NaN()},{"parallel_epsilon",0},
     {"parallel_epsilon",1},{"segment_length_epsilon",0},{"degenerate_axis_distance",0},
     {"max_repulsive_velocity",-1},{"capsule_publish_rate",0}};
@@ -393,6 +600,9 @@ TEST(SelfCollisionTask, InvalidConfigurationIsRejected)
   EXPECT_THROW(configure(task,p,b),std::invalid_argument);
   p=parameters(); p["capsules.a.start_frame"]=rclcpp::Parameter("capsules.a.start_frame","unknown");
   EXPECT_THROW(configure(task,p,b),std::invalid_argument);
+  // Equality at the admissible epsilon bound is rejected too.
+  p=parameters(); scalar(p,"release_distance",.13); scalar(p,"eps",.13-.12);
+  EXPECT_THROW(configure(task,p,b),std::invalid_argument);
 }
 TEST(SelfCollisionTask, RuntimeParameterPolicy)
 {
@@ -403,6 +613,8 @@ TEST(SelfCollisionTask, RuntimeParameterPolicy)
   EXPECT_FALSE(task->publish_capsules());
   EXPECT_FALSE(validate_collision_parameter_updates({rclcpp::Parameter("tasks.self_collision_avoidance.plane_names",std::vector<std::string>{"guard"})},tasks).successful);
   EXPECT_FALSE(validate_collision_parameter_updates({rclcpp::Parameter("tasks.self_collision_avoidance.planes.guard.reference_frame","base")},tasks).successful);
+  EXPECT_FALSE(validate_collision_parameter_updates({rclcpp::Parameter("tasks.self_collision_avoidance.release_distance",.14)},tasks).successful);
+  EXPECT_FALSE(validate_collision_parameter_updates({rclcpp::Parameter("tasks.self_collision_avoidance.eps",.0002)},tasks).successful);
   EXPECT_FALSE(validate_collision_parameter_updates({rclcpp::Parameter("tasks.self_collision_avoidance.gain_scalar",std::numeric_limits<double>::quiet_NaN())},tasks).successful);
 }
 TEST(SelfCollisionTask, KDLJointOrderingMatchesFiniteDifference)
@@ -435,6 +647,18 @@ TEST(SelfCollisionTask, KDLJointOrderingMatchesFiniteDifference)
   state.joint_positions.resize(8); state.joint_positions << .15,-.12,.25,-.06,.08,-.16,.22,-.09;
   state.joint_velocities=Eigen::VectorXd::Zero(8);
   kdl->update(state);
+  std::vector<size_t> dependencies{99};
+  ASSERT_TRUE(kdl->frame_joint_dependencies("base", dependencies)); EXPECT_TRUE(dependencies.empty());
+  ASSERT_TRUE(kdl->frame_joint_dependencies("A", dependencies));
+  EXPECT_EQ(dependencies, (std::vector<size_t>{0, 1}));
+  ASSERT_TRUE(kdl->frame_joint_dependencies("B", dependencies));
+  EXPECT_EQ(dependencies, (std::vector<size_t>{0, 1, 2, 3}));
+  ASSERT_TRUE(kdl->frame_joint_dependencies("C", dependencies));
+  EXPECT_EQ(dependencies, (std::vector<size_t>{4, 5}));
+  ASSERT_TRUE(kdl->clone()->frame_joint_dependencies("D", dependencies));
+  EXPECT_EQ(dependencies, (std::vector<size_t>{4, 5, 6, 7}));
+  ASSERT_TRUE(kdl->frame_joint_dependencies("unused_mesh", dependencies)); EXPECT_TRUE(dependencies.empty());
+  EXPECT_FALSE(kdl->frame_joint_dependencies("missing", dependencies)); EXPECT_TRUE(dependencies.empty());
   auto p=parameters(); scalar(p,"activation_distance",10.0);
   SelfCollisionAvoidanceTask task;
   task.configure("self_collision_avoidance","task_priority_kinematic_control/SelfCollisionAvoidanceTask",p,TaskContext{m,kdl});
@@ -450,6 +674,46 @@ TEST(SelfCollisionTask, KDLJointOrderingMatchesFiniteDifference)
     auto plus=state,minus=state;
     plus.joint_positions(i)+=1e-6; minus.joint_positions(i)-=1e-6;
     EXPECT_NEAR(output.jacobian(0,6+i),(clearance(plus)-clearance(minus))/2e-6,1e-7) << "joint " << i;
+  }
+  // Same-arm capsules: ancestors l0/l1 are a shared rigid motion, l2 changes distance.
+  capsule(p, "a", "A", "A"); capsule(p, "b", "B", "B");
+  task.configure("self_collision_avoidance", "task_priority_kinematic_control/SelfCollisionAvoidanceTask", p, TaskContext{m, kdl});
+  auto masked = task.update(state, *kdl); ASSERT_TRUE(masked.active); ASSERT_FALSE(masked.stop_arm_motion);
+  EXPECT_DOUBLE_EQ(masked.jacobian.leftCols(8).norm(), 0); EXPECT_DOUBLE_EQ(masked.jacobian.rightCols(4).norm(), 0);
+  EXPECT_GT(std::abs(masked.jacobian(0, 8)), 1e-3);
+  for (Eigen::Index i = 0; i < 8; ++i) {
+    auto plus = state, minus = state; plus.joint_positions(i) += 1e-6; minus.joint_positions(i) -= 1e-6;
+    const auto separation = [&](const WholeBodyState & s) {
+        return (kdl->compute_frame_state(s, "B").pose.translation() -
+               kdl->compute_frame_state(s, "A").pose.translation()).norm() - .08;
+      };
+    EXPECT_NEAR(masked.jacobian(0, 6 + i), (separation(plus) - separation(minus)) / 2e-6, 1e-8);
+  }
+  // A base-referenced plane uses one arm only; an A-referenced plane excludes l0/l1.
+  auto plane = plane_parameters(); scalar(plane, "activation_distance", 10);
+  plane["planes.guard.normal_axis"] = rclcpp::Parameter("planes.guard.normal_axis", "y");
+  plane["planes.guard.allowed_side"] = rclcpp::Parameter("planes.guard.allowed_side", "negative");
+  scalar(plane, "planes.guard.position", .5);
+  for (const auto & reference : {"base", "A"}) {
+    SCOPED_TRACE(reference);
+    plane["planes.guard.reference_frame"] = rclcpp::Parameter("planes.guard.reference_frame", reference);
+    task.configure("self_collision_avoidance", "task_priority_kinematic_control/SelfCollisionAvoidanceTask", plane, TaskContext{m, kdl});
+    masked = task.update(state, *kdl); ASSERT_TRUE(masked.active); ASSERT_FALSE(masked.stop_arm_motion);
+    EXPECT_DOUBLE_EQ(masked.jacobian.rightCols(4).norm(), 0);
+    if (std::string(reference) == "A") {
+      EXPECT_DOUBLE_EQ(masked.jacobian.leftCols(8).norm(), 0);
+      EXPECT_GT(std::abs(masked.jacobian(0, 8)), 1e-3);
+    }
+    const auto plane_clearance = [&](const WholeBodyState & s) {
+        const auto inverse = kdl->compute_frame_state(s, reference).pose.inverse();
+        return capsule_plane_distance(inverse * kdl->compute_frame_state(s, "A").pose.translation(),
+          inverse * kdl->compute_frame_state(s, "B").pose.translation(), .04, 1, -1, .5,
+          {-.5, -.5}, {.5, .5}).clearance;
+      };
+    for (Eigen::Index i = 0; i < 8; ++i) {
+      auto plus = state, minus = state; plus.joint_positions(i) += 1e-6; minus.joint_positions(i) -= 1e-6;
+      EXPECT_NEAR(masked.jacobian(0, 6 + i), (plane_clearance(plus) - plane_clearance(minus)) / 2e-6, 1e-8);
+    }
   }
 }
 
@@ -476,6 +740,23 @@ TEST_F(ManagerTest, DeclaresPlaneOverridesAndDefaultsWithoutRobotSpecificFrames)
   auto empty = std::make_shared<rclcpp::Node>("plane_empty_declaration_test");
   declare_collision_parameters(empty->get_node_parameters_interface(), prefix);
   EXPECT_TRUE(empty->get_parameter(prefix + "plane_names").as_string_array().empty());
+  EXPECT_DOUBLE_EQ(empty->get_parameter(prefix + "release_distance").as_double(), .12 + .01);
+  EXPECT_DOUBLE_EQ(empty->get_parameter(prefix + "eps").as_double(), .0001);
+}
+TEST_F(ManagerTest, ReleaseDefaultUsesEffectiveActivationOverride)
+{
+  const std::string prefix = "tasks.self_collision_avoidance.";
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({rclcpp::Parameter(prefix + "activation_distance", .05)});
+  auto node = std::make_shared<rclcpp::Node>("hysteresis_declaration_default", options);
+  declare_collision_parameters(node->get_node_parameters_interface(), prefix);
+  EXPECT_DOUBLE_EQ(node->get_parameter(prefix + "release_distance").as_double(), .05 + .01);
+  options.parameter_overrides({rclcpp::Parameter(prefix + "activation_distance", .05),
+    rclcpp::Parameter(prefix + "release_distance", .08), rclcpp::Parameter(prefix + "eps", .0002)});
+  auto explicit_node = std::make_shared<rclcpp::Node>("hysteresis_declaration_override", options);
+  declare_collision_parameters(explicit_node->get_node_parameters_interface(), prefix);
+  EXPECT_DOUBLE_EQ(explicit_node->get_parameter(prefix + "release_distance").as_double(), .08);
+  EXPECT_DOUBLE_EQ(explicit_node->get_parameter(prefix + "eps").as_double(), .0002);
 }
 TEST_F(ManagerTest, FinalCommandsStopBothArmsAndPreserveBase)
 {

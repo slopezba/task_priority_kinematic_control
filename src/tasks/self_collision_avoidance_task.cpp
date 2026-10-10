@@ -24,6 +24,7 @@ void SelfCollisionAvoidanceTask::configure(
   const std::map<std::string, rclcpp::Parameter> & params, const TaskContext & context)
 {
   configure_common(id, plugin, params, context);
+  reset();
   const auto fail = [&](const std::string & reason) {
       throw std::invalid_argument("Task '" + id + "': " + reason);
     };
@@ -31,6 +32,8 @@ void SelfCollisionAvoidanceTask::configure(
   if (!context.model || !kinematics) {fail("a configured model and backend are required");}
   safe_distance_ = get_double_param(params, "safe_distance", 0.05);
   activation_distance_ = get_double_param(params, "activation_distance", 0.12);
+  release_distance_ = get_double_param(params, "release_distance", activation_distance_ + 0.01);
+  eps_ = get_double_param(params, "eps", 0.0001);
   gain_ = get_double_param(params, "gain_scalar", 1.0);
   max_repulsive_velocity_ = get_double_param(params, "max_repulsive_velocity", 0.08);
   parallel_epsilon_ = get_double_param(params, "parallel_epsilon", 1e-8);
@@ -38,12 +41,16 @@ void SelfCollisionAvoidanceTask::configure(
   degenerate_axis_distance_ = get_double_param(params, "degenerate_axis_distance", 1e-6);
   capsule_publish_rate_ = get_double_param(params, "capsule_publish_rate", 1.0);
   publish_capsules_.store(get_bool_param(params, "publish_capsules", true));
-  for (const auto value : {safe_distance_, activation_distance_, gain_, max_repulsive_velocity_,
+  for (const auto value : {safe_distance_, activation_distance_, release_distance_, eps_, gain_, max_repulsive_velocity_,
       parallel_epsilon_, segment_length_epsilon_, degenerate_axis_distance_, capsule_publish_rate_}) {
     if (!std::isfinite(value)) {fail("distances, gains, tolerances and rate must be finite");}
   }
   if (safe_distance_ < 0 || activation_distance_ < safe_distance_ || gain_ < 0 ||
     max_repulsive_velocity_ < 0) {fail("require activation_distance >= safe_distance >= 0 and nonnegative gains/velocity");}
+  if (release_distance_ <= activation_distance_ || eps_ <= 0 ||
+    eps_ >= release_distance_ - activation_distance_) {
+    fail("require release_distance > activation_distance and 0 < eps < release_distance - activation_distance");
+  }
   if (parallel_epsilon_ <= 0 || parallel_epsilon_ >= 1 || segment_length_epsilon_ <= 0 ||
     degenerate_axis_distance_ <= 0) {fail("invalid geometry tolerance (parallel_epsilon must be between 0 and 1)");}
   if (publish_capsules() && capsule_publish_rate_ <= 0) {fail("capsule_publish_rate must be positive when enabled");}
@@ -177,10 +184,85 @@ void SelfCollisionAvoidanceTask::configure(
   jacobian_.setZero(rows, dofs);
   point_difference_.setZero(3, dofs);
   desired_.setZero(rows); errors_.setZero(rows);
+  configure_pair_columns(*kinematics);
+  pair_active_.assign(static_cast<size_t>(rows), 0);
+  active_joints_.assign(context.model->total_dofs() - context.model->base_dofs(), 0);
   snapshots_.initialize([&](CollisionSnapshot & snapshot) {
       snapshot.capsules.resize(capsules_.size()); snapshot.planes.resize(planes_.size());
     });
   last_ = CollisionMetrics{};
+}
+
+void SelfCollisionAvoidanceTask::configure_pair_columns(const KinematicsBackend & backend)
+{
+  const size_t joint_count = context_.model->all_joint_names().size();
+  const size_t base_dofs = context_.model->base_dofs();
+  std::vector<std::vector<size_t>> dependencies(frames_.size());
+  std::vector<bool> certified(frames_.size());
+  for (size_t i = 0; i < frames_.size(); ++i) {
+    certified[i] = backend.frame_joint_dependencies(frames_[i], dependencies[i]);
+    for (const size_t joint : dependencies[i]) {
+      if (joint >= joint_count) {
+        throw std::invalid_argument("Task '" + id_ + "': out-of-model joint dependency for " + frames_[i]);
+      }
+    }
+    std::sort(dependencies[i].begin(), dependencies[i].end());
+    dependencies[i].erase(std::unique(dependencies[i].begin(), dependencies[i].end()), dependencies[i].end());
+  }
+  pair_columns_.clear();
+  pair_columns_.reserve(pairs_.size() + plane_pairs_.size());
+  const auto append = [&](const std::vector<size_t> & frames) {
+      bool supported = true;
+      std::vector<size_t> occurrences(joint_count, 0);
+      for (const size_t frame : frames) {
+        supported = supported && certified[frame];
+        for (const size_t joint : dependencies[frame]) {++occurrences[joint];}
+      }
+      pair_columns_.emplace_back();
+      auto & columns = pair_columns_.back();
+      for (size_t joint = 0; joint < joint_count; ++joint) {
+        // Shared ancestors move every endpoint/reference rigidly together.
+        if (!supported || (occurrences[joint] > 0 && occurrences[joint] < frames.size())) {
+          columns.push_back(static_cast<Eigen::Index>(base_dofs + joint));
+        }
+      }
+    };
+  for (const auto & pair : pairs_) {
+    const auto & a = capsules_[pair[0]];
+    const auto & b = capsules_[pair[1]];
+    append({a.start_index, a.end_index, b.start_index, b.end_index});
+  }
+  for (const auto & pair : plane_pairs_) {
+    const auto & capsule = capsules_[pair[0]];
+    append({capsule.start_index, capsule.end_index, planes_[pair[1]].reference_index});
+  }
+}
+
+bool SelfCollisionAvoidanceTask::update_pair_activation(size_t row, double clearance)
+{
+  if (pair_active_[row]) {
+    if (clearance >= release_distance_ - eps_) {pair_active_[row] = 0;}
+  } else if (clearance < activation_distance_) {
+    pair_active_[row] = 1;
+  }
+  return pair_active_[row] != 0;
+}
+
+bool SelfCollisionAvoidanceTask::set_enabled(bool enabled)
+{
+  const bool result = TaskBaseCommon::set_enabled(enabled);
+  reset();
+  return result;
+}
+
+void SelfCollisionAvoidanceTask::reset()
+{
+  std::fill(pair_active_.begin(), pair_active_.end(), 0);
+  std::fill(active_joints_.begin(), active_joints_.end(), 0);
+  jacobian_.setZero(); desired_.setZero(); errors_.setZero();
+  last_ = CollisionMetrics{};
+  for (auto & capsule : snapshots_.writable().capsules) {capsule = CapsulePose{};}
+  for (auto & plane : snapshots_.writable().planes) {plane = PlanePose{};}
 }
 
 void SelfCollisionAvoidanceTask::prepare_computation(TaskComputation & out) const
@@ -200,6 +282,8 @@ TaskComputation SelfCollisionAvoidanceTask::update(const WholeBodyState & state,
 
 void SelfCollisionAvoidanceTask::invalid(TaskComputation & out)
 {
+  std::fill(pair_active_.begin(), pair_active_.end(), 0);
+  last_.active_pairs = 0; last_.active_joint_count = 0; last_.zero_jacobian_pairs = 0;
   last_.invalid_geometry = true; last_.stop_arms = true;
   jacobian_.setZero(); desired_.setZero(); errors_.setZero();
   out.jacobian.setZero(); out.desired_velocity.setZero(); out.error.setZero();
@@ -272,12 +356,13 @@ void SelfCollisionAvoidanceTask::update_into(
       last_.min_clearance = distance.clearance; last_.closest_pair = i;
     }
     if (distance.axis_distance <= degenerate_axis_distance_) {
+      pair_active_[i] = 0;
       ++last_.degenerate_pairs; last_.stop_arms = true;
       if (last_.fault_pair == std::numeric_limits<size_t>::max()) {last_.fault_pair = i;}
       snapshot.capsules[a].highlighted = snapshot.capsules[b].highlighted = true;
       continue;
     }
-    if (distance.clearance >= activation_distance_) {continue;}
+    if (!update_pair_activation(i, distance.clearance)) {continue;}
     const Eigen::Vector3d normal = (distance.q - distance.p) / distance.axis_distance;
     // Closest points can interpolate endpoints on different rigid links.
     point_difference_.noalias() = (1 - distance.t) * endpoints_[cb.start_index].jacobian;
@@ -285,12 +370,10 @@ void SelfCollisionAvoidanceTask::update_into(
     point_difference_.noalias() -= (1 - distance.s) * endpoints_[ca.start_index].jacobian;
     point_difference_.noalias() -= distance.s * endpoints_[ca.end_index].jacobian;
     // Scalar columns avoid temporary packing for a strided Eigen matrix row.
-    for (Eigen::Index col = 0; col < jacobian_.cols(); ++col) {
+    for (const Eigen::Index col : pair_columns_[i]) {
       jacobian_(static_cast<Eigen::Index>(i), col) = normal.dot(point_difference_.col(col));
     }
-    // A rigid motion of the whole robot cannot resolve a self collision.
-    jacobian_.row(i).head(context_.model->base_dofs()).setZero();
-    desired_(i) = std::clamp(gain_ * (activation_distance_ - distance.clearance), 0.0, max_repulsive_velocity_);
+    desired_(i) = std::clamp(gain_ * (release_distance_ - distance.clearance), 0.0, max_repulsive_velocity_);
     errors_(i) = std::max(0.0, safe_distance_ - distance.clearance);
     ++last_.active_pairs;
     snapshot.capsules[a].highlighted = snapshot.capsules[b].highlighted = true;
@@ -309,12 +392,12 @@ void SelfCollisionAvoidanceTask::update_into(
       plane.normal_axis, plane.allowed_sign, plane.position, plane.bounds_min, plane.bounds_max);
     const auto row = static_cast<Eigen::Index>(pairs_.size() + i);
     if (!distance.valid) {last_.fault_pair = static_cast<size_t>(row); invalid(out); return;}
-    if (!distance.intersects) {continue;}
+    if (!distance.intersects) {pair_active_[static_cast<size_t>(row)] = 0; continue;}
     if (distance.clearance < last_.min_clearance) {
       last_.min_clearance = distance.clearance; last_.closest_pair = static_cast<size_t>(row);
     }
-    if (distance.clearance >= activation_distance_) {continue;}
-    for (Eigen::Index col = 0; col < jacobian_.cols(); ++col) {
+    if (!update_pair_activation(static_cast<size_t>(row), distance.clearance)) {continue;}
+    for (const Eigen::Index col : pair_columns_[static_cast<size_t>(row)]) {
       // Relative point derivatives include rotation of the plane's reference frame.
       const Eigen::Vector3d ja = to_local * (start.jacobian.col(col).head<3>() -
         reference.jacobian.col(col).head<3>() + ra.cross(reference.jacobian.col(col).tail<3>()));
@@ -322,15 +405,26 @@ void SelfCollisionAvoidanceTask::update_into(
         reference.jacobian.col(col).head<3>() + rb.cross(reference.jacobian.col(col).tail<3>()));
       jacobian_(row, col) = distance.gradient_a.dot(ja) + distance.gradient_b.dot(jb);
     }
-    // All reference frames belong to the robot model; common rigid base motion cancels.
-    jacobian_.row(row).head(context_.model->base_dofs()).setZero();
-    desired_(row) = std::clamp(gain_ * (activation_distance_ - distance.clearance), 0.0, max_repulsive_velocity_);
+    desired_(row) = std::clamp(gain_ * (release_distance_ - distance.clearance), 0.0, max_repulsive_velocity_);
     errors_(row) = std::max(0.0, safe_distance_ - distance.clearance);
     ++last_.active_pairs;
     snapshot.capsules[capsule_index].highlighted = true;
     snapshot.planes[plane_index].highlighted = true;
   }
   if (!jacobian_.allFinite() || !desired_.allFinite() || !errors_.allFinite()) {invalid(out); return;}
+  std::fill(active_joints_.begin(), active_joints_.end(), 0);
+  for (size_t row = 0; row < pair_active_.size(); ++row) {
+    if (!pair_active_[row]) {continue;}
+    bool nonzero = false;
+    for (const Eigen::Index col : pair_columns_[row]) {
+      if (jacobian_(static_cast<Eigen::Index>(row), col) != 0.0) {
+        nonzero = true;
+        active_joints_[static_cast<size_t>(col) - context_.model->base_dofs()] = 1;
+      }
+    }
+    if (!nonzero) {++last_.zero_jacobian_pairs;}
+  }
+  last_.active_joint_count = static_cast<size_t>(std::count(active_joints_.begin(), active_joints_.end(), 1));
   out.jacobian = jacobian_; out.desired_velocity = desired_; out.error = errors_;
   out.active = last_.active_pairs > 0;
   out.stop_arm_motion = last_.stop_arms;
@@ -387,6 +481,7 @@ msg::TaskStatus SelfCollisionAvoidanceTask::build_status() const
     text << " closest_pair=" << collision_pair_name(last_.closest_pair);
   }
   text << " active_pairs=" << last_.active_pairs << " degenerate_pairs=" << last_.degenerate_pairs
+       << " active_joint_count=" << last_.active_joint_count << " zero_jacobian_pairs=" << last_.zero_jacobian_pairs
        << " stop_arms=" << last_.stop_arms << " invalid_geometry=" << last_.invalid_geometry
        << " max_velocity_deficit=" << last_.max_velocity_deficit;
   status.status_message = text.str();

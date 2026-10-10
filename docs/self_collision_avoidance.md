@@ -115,7 +115,9 @@ plane pair as `<capsule_name>,plane:<plane_name>`.
 | Parameter | Default | Meaning |
 |---|---:|---|
 | `activation_distance` | 0.12 m | Repulsion begins below this surface clearance. |
-| `safe_distance` | 0.05 m | Desired minimum separation, reported as `max(0, safe_distance-clearance)`. |
+| `release_distance` | effective `activation_distance` + 0.01 m | Recovery target; each active pair releases at `release_distance - eps`. |
+| `eps` | 0.0001 m | Release tolerance, avoiding asymptotic recovery that never releases a row. |
+| `safe_distance` | 0.05 m | Diagnostic threshold only, reported as `max(0, safe_distance-clearance)`. |
 | `gain_scalar` | 1.0 s⁻¹ | Separation speed gain. |
 | `max_repulsive_velocity` | 0.08 m/s | Maximum requested pair separation speed. |
 | `parallel_epsilon` | 1e-8 | Dimensionless squared sine threshold for near-parallel segments. |
@@ -124,13 +126,20 @@ plane pair as `<capsule_name>,plane:<plane_name>`.
 | `publish_capsules` | true | Enable RViz markers; can be toggled at runtime. |
 | `capsule_publish_rate` | 1 Hz | Visualization refresh rate; positive when enabled. |
 
-All numbers must be finite, `activation_distance >= safe_distance >= 0`, gains and maximum
+All numbers must be finite, `activation_distance >= safe_distance >= 0`,
+`release_distance > activation_distance`, `0 < eps < release_distance - activation_distance`, gains and maximum
 speed nonnegative, numerical tolerances positive, and `parallel_epsilon < 1`. Geometry,
 pair exclusions, tolerances, distances, maximum speed and publication frequency require a
 controller reload. Scalar gains and task enablement use the existing tuning interfaces;
 `publish_capsules` can be toggled without reloading. Enabling publication with a configured
 nonpositive rate is rejected. Removed automatic-link filters have no effect and must not be
 used in new configurations.
+
+ROS declaration computes the release default after applying the activation override; an
+explicit release override takes precedence. Both new parameters require a controller reload.
+The vehicle uses activation 0.05 m, release 0.06 m and eps 0.0001 m: enter below 5 cm,
+release at or above 5.99 cm. Both example configurations use activation 0.12 m and release
+0.13 m. `safe_distance` does not select the recovery target or activate/release a pair.
 
 ## Geometry and Jacobians
 
@@ -166,19 +175,55 @@ avoids differentiating `s` and `t`. Columns follow `WholeBodyModel`, including b
 the configured base DoFs. Base columns are zero for self-distance. The supplied system has
 14 columns (six base and eight arm), but this size is not hardcoded.
 
+During configuration, the optional backend query `frame_joint_dependencies(frame, indices)`
+certifies tree ancestors in `WholeBodyModel::all_joint_names()` order, excluding base DoFs.
+KDL uses its existing chains; its base frame has a valid empty ancestor list. A capsule pair
+uses all four endpoint frames; a capsule/plane pair uses the two endpoints and reference.
+Candidate columns are the union of their ancestors minus the intersection common to every
+frame. Those common ancestors move the complete geometry rigidly and cannot change clearance.
+Indices are validated and deduplicated, then offset by the configured number of base DoFs.
+Excluded joint columns and all base columns are exactly zero. Every coefficient on a candidate
+column is retained, including small values; no `jacobian_eps` threshold is applied.
+
+If any involved frame lacks certified dependencies, that pair retains all articulated
+columns of the computed Jacobian. No dependencies are inferred from the current posture.
+Masks are fixed during configuration, with no topology queries or added allocations in
+the usual update. An allowed column can still be zero in a particular posture.
+
 Clearance is axis distance minus both radii: positive means separated, zero contact,
-negative capsule overlap. A checked pair below `activation_distance` requests:
+negative capsule overlap. Each checked pair has an independent activation latch:
+
+| Previous state | Clearance | Next state |
+|---|---|---|
+| Inactive | `< activation_distance` | Active |
+| Inactive | `>= activation_distance` | Inactive |
+| Active | `< release_distance - eps` | Active |
+| Active | `>= release_distance - eps` | Inactive |
+
+While active, its recovery request is:
 
 ```
-v = clamp(gain_scalar * (activation_distance - clearance), 0, max_repulsive_velocity)
+v = clamp(gain_scalar * (release_distance - clearance), 0, max_repulsive_velocity)
 ```
 
 There is one fixed output row per checked capsule or plane pair, in generated pair order. Inactive and
-undefined rows are zero; `TaskComputation.active` is true when a valid repulsion row exists.
+undefined rows are zero; a released row has zero Jacobian, requested velocity and error even
+while other pairs remain active. Leaving a plane's radius-expanded finite footprint also
+clears that pair's latch immediately. Disable/enable, reset, reconfiguration and invalid
+geometry clear the latches. `TaskComputation.active` is true when a valid active pair exists,
+including an active pair whose distance Jacobian is zero.
 The original task-priority solver is unchanged. `safe_distance` is a metric, not a hard
 barrier constraint. Competing rows, damping and final velocity limits can prevent satisfying
 requested separation speeds; `max_velocity_deficit` reports the maximum positive requested
 minus achieved separation rate using the final applied generalized command.
+
+Diagnostics also report `active_joint_count`, the number of distinct articulated columns
+with an exactly nonzero coefficient in active rows, and `zero_jacobian_pairs`, the number
+of active pairs with an entirely zero row. Such a pair stays active and reports its unmet
+request in `max_velocity_deficit`; it neither reports clear nor introduces a new stop policy.
+The solver still resolves active rows as equalities. Releasing a row frees its directions
+for lower-priority tasks; necessary active restrictions can still occupy all available
+directions. This mechanism is not an inequality solver or a formal safety guarantee.
 
 ## Degenerate geometry and recovery
 
@@ -211,7 +256,9 @@ in namespace `self_collision_avoidance/<capsule_name>`. All diameters equal twic
 Right-arm markers are blue, left-arm markers green, and active/degenerate capsules red.
 Planes are translucent amber rectangular triangle markers in namespace
 `self_collision_avoidance/planes/<plane_name>` with ID 0. Both windings are emitted for
-visibility from either side; active planes are red. Corners are transformed from each
+visibility from either side; active planes are red. Capsules and planes remain red throughout
+the hysteresis recovery band until their pair releases, even above `activation_distance`.
+Corners are transformed from each
 reference frame into the same base frame and use the same snapshot timestamps. Invalid
 geometry deletes the affected markers instead of displaying stale positions.
 Zero-length capsules show one sphere and delete the other primitives. Publication disablement,
@@ -246,6 +293,11 @@ finite-difference Jacobians, moving-base invariance, stop/recovery and marker ge
 Plane tests add X/Y/Z normals, both allowed sides, radius-expanded finite bounds, clipping
 gradients, contact/crossing recovery, selected/multiple planes, moving and rotated reference
 frames, parameter declarations, runtime failure and rectangle publication/deletion.
+Additional tests cover exact entry/release thresholds, epsilon release, persistent hysteresis,
+independent rows, restored lower-task motion, lifecycle/fault resets, finite-footprint exit,
+recovery marker colors, KDL ancestor masks (one/both arms and moving references), finite
+differences after masking, unsupported-backend fallback, duplicate/invalid dependency indices,
+small retained coefficients, zero-Jacobian diagnostics and override-dependent defaults.
 Snapshot tests retain an old consumer slot through 100,000 publications and check concurrent
 snapshot consistency. A ROS integration test verifies publication on the dedicated observer
 executor and deletion when visualization is disabled. Build and run from the workspace root:

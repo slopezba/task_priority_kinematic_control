@@ -5,9 +5,11 @@
 
 #include <rclcpp/logger.hpp>
 
+#include <cstddef>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace task_priority_kinematic_control
 {
@@ -31,6 +33,15 @@ public:
   {
     try {out = get_frame_state(frame_id); return true;}
     catch (const std::exception &) {return false;}
+  }
+
+  // true certifies tree ancestors, indexed in WholeBodyModel::all_joint_names().
+  // Base DoFs are excluded. Unsupported backends retain the full joint Jacobian.
+  virtual bool frame_joint_dependencies(
+    const std::string &, std::vector<size_t> & joint_indices) const
+  {
+    joint_indices.clear();
+    return false;
   }
 
   virtual std::shared_ptr<KinematicsBackend> clone() const

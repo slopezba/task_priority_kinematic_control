@@ -48,6 +48,8 @@ task_priority_controller:
     tasks.self_collision_avoidance.group: safety
     tasks.self_collision_avoidance.safe_distance: 0.05
     tasks.self_collision_avoidance.activation_distance: 0.12
+    tasks.self_collision_avoidance.release_distance: 0.13
+    tasks.self_collision_avoidance.eps: 0.0001
     tasks.self_collision_avoidance.gain_scalar: 1.0
     tasks.self_collision_avoidance.max_repulsive_velocity: 0.08
     tasks.self_collision_avoidance.parallel_epsilon: 1.0e-8

@@ -25,6 +25,9 @@ public:
 
   bool read_frame_state(const std::string & frame_id, FrameState & out) const override;
 
+  bool frame_joint_dependencies(
+    const std::string & frame, std::vector<size_t> & joint_indices) const override;
+
   std::shared_ptr<KinematicsBackend> clone() const override;
 
   FrameState compute_frame_state(

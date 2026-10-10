@@ -154,6 +154,20 @@ bool KDLKinematicsBackend::read_frame_state(const std::string & frame_id, FrameS
   return true;
 }
 
+bool KDLKinematicsBackend::frame_joint_dependencies(
+  const std::string & frame, std::vector<size_t> & joint_indices) const
+{
+  joint_indices.clear();
+  if (frame == model_.base_frame()) {return true;}
+  const auto it = chains_.find(frame);
+  if (it == chains_.end()) {return false;}
+  for (const auto & joint : it->second.joint_names) {
+    const int index = model_.joint_index(joint);
+    if (index >= 0) {joint_indices.push_back(static_cast<size_t>(index));}
+  }
+  return true;
+}
+
 std::shared_ptr<KinematicsBackend> KDLKinematicsBackend::clone() const
 {
   return std::make_shared<KDLKinematicsBackend>(*this);

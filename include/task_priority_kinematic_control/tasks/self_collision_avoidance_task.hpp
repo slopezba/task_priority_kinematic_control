@@ -45,6 +45,8 @@ struct PlanePose
 struct CollisionMetrics
 {
   size_t active_pairs = 0;
+  size_t active_joint_count = 0;
+  size_t zero_jacobian_pairs = 0;
   size_t degenerate_pairs = 0;
   size_t closest_pair = std::numeric_limits<size_t>::max();
   size_t fault_pair = std::numeric_limits<size_t>::max();
@@ -73,6 +75,8 @@ public:
   void prepare_computation(TaskComputation & out) const override;
   void update_into(const WholeBodyState &, const KinematicsBackend &, TaskComputation &) override;
   void observe_command(const WholeBodyCommand & command, int64_t timestamp_ns) override;
+  bool set_enabled(bool enabled) override;
+  void reset() override;
   bool set_gain_scalar(double gain, std::string & message) override;
   msg::TaskStatus build_status() const override;
   const std::vector<ManualCapsule> & capsules() const {return capsules_;}
@@ -96,6 +100,8 @@ private:
     Eigen::MatrixXd jacobian;
   };
   size_t add_frame(const std::string & frame);
+  void configure_pair_columns(const KinematicsBackend & backend);
+  bool update_pair_activation(size_t row, double clearance);
   void invalid(TaskComputation & out);
   std::vector<ManualCapsule> capsules_;
   std::vector<std::array<size_t, 2>> pairs_;
@@ -103,9 +109,15 @@ private:
   std::vector<std::array<size_t, 2>> plane_pairs_;
   std::vector<std::string> frames_;
   std::vector<EndpointState> endpoints_;
+  // Fixed candidate columns and persistent latches, in the same order as task rows.
+  std::vector<std::vector<Eigen::Index>> pair_columns_;
+  std::vector<unsigned char> pair_active_;
+  std::vector<unsigned char> active_joints_;
   size_t ignored_pair_count_ = 0;
   double safe_distance_ = 0.05;
   double activation_distance_ = 0.12;
+  double release_distance_ = 0.13;
+  double eps_ = 0.0001;
   double gain_ = 1.0;
   double max_repulsive_velocity_ = 0.08;
   double parallel_epsilon_ = 1e-8;
