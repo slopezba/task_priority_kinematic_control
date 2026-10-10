@@ -26,6 +26,13 @@ public:
 
   virtual FrameState get_frame_state(const std::string & frame_id) const = 0;
 
+  // KDL overrides this to copy directly into an already sized output matrix.
+  virtual bool read_frame_state(const std::string & frame_id, FrameState & out) const
+  {
+    try {out = get_frame_state(frame_id); return true;}
+    catch (const std::exception &) {return false;}
+  }
+
   virtual std::shared_ptr<KinematicsBackend> clone() const
   {
     return nullptr;

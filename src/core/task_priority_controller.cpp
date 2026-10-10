@@ -290,6 +290,9 @@ controller_interface::CallbackReturn TaskPriorityController::on_init()
     auto_declare_if_missing(this, "velocity_limits", std::vector<double>{});
     auto_declare_if_missing(this, "navigator_topic", std::string("/cirtesub/navigator/navigation"));
     auto_declare_if_missing(this, "body_velocity_controller_name", std::string("body_velocity"));
+    auto_declare_if_missing(this, "base_command_mode", std::string("interfaces"));
+    auto_declare_if_missing(this, "base_command_topic", std::string("/cirtesub/controller/body_velocity/setpoint"));
+    auto_declare_if_missing(this, "navigator_timeout", 0.0);
     auto_declare_if_missing(this, "task_ids", std::vector<std::string>{});
     declare_task_parameters();
   } catch (const std::exception & ex) {
@@ -317,13 +320,16 @@ void TaskPriorityController::declare_task_parameters()
     auto_declare_if_missing(this, prefix + "alpha", 0.1);
     auto_declare_if_missing(this, prefix + "delta", 0.15);
     auto_declare_if_missing(this, prefix + "eps", 1e-4);
-    auto_declare_if_missing(this, prefix + "gain_scalar", 0.5);
+    auto_declare_if_missing(this, prefix + "gain_scalar",
+      get_node()->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/SelfCollisionAvoidanceTask" ? 1.0 : 0.5);
     auto_declare_if_missing(this, prefix + "safe_distance", 0.05);
     auto_declare_if_missing(this, prefix + "activation_distance", 0.12);
     auto_declare_if_missing(this, prefix + "max_repulsive_velocity", 0.08);
-    auto_declare_if_missing(this, prefix + "check_adjacent_links", false);
-    auto_declare_if_missing(this, prefix + "include_link_substrings", std::vector<std::string>{});
-    auto_declare_if_missing(this, prefix + "exclude_link_substrings", std::vector<std::string>{});
+    if (get_node()->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/SelfCollisionAvoidanceTask") {
+      declare_collision_parameters(get_node()->get_node_parameters_interface(), prefix);
+    }
     auto_declare_if_missing(this, prefix + "joint_names", std::vector<std::string>{});
     auto_declare_if_missing(this, prefix + "target", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "activation", std::vector<int64_t>{});
@@ -393,14 +399,17 @@ TaskPriorityController::command_interface_configuration() const
   const std::string body_velocity_name = get_node()->has_parameter("body_velocity_controller_name") ?
     get_node()->get_parameter("body_velocity_controller_name").as_string() :
     std::string("body_velocity");
-  std::vector<std::string> names = {
+  std::vector<std::string> names;
+  if (get_node()->get_parameter("base_command_mode").as_string() == "interfaces") {
+    names = {
     body_velocity_name + "/linear.x",
     body_velocity_name + "/linear.y",
     body_velocity_name + "/linear.z",
     body_velocity_name + "/angular.x",
     body_velocity_name + "/angular.y",
     body_velocity_name + "/angular.z"
-  };
+    };
+  }
 
   try {
     append_joint_velocity_interfaces(this, "left_arm_joints", names);
@@ -436,6 +445,27 @@ TaskPriorityController::state_interface_configuration() const
 controller_interface::CallbackReturn TaskPriorityController::on_configure(
   const rclcpp_lifecycle::State &)
 {
+  const auto base_mode = get_node()->get_parameter("base_command_mode").as_string();
+  if (base_mode != "interfaces" && base_mode != "topic") {
+    RCLCPP_ERROR(get_node()->get_logger(), "base_command_mode must be interfaces or topic");
+    return controller_interface::CallbackReturn::ERROR;
+  }
+  base_command_via_topic_ = base_mode == "topic";
+  navigator_timeout_ = get_node()->get_parameter("navigator_timeout").as_double();
+  if (!std::isfinite(navigator_timeout_) || navigator_timeout_ < 0.0) {
+    return controller_interface::CallbackReturn::ERROR;
+  }
+  base_command_rt_pub_.reset();
+  base_command_pub_.reset();
+  if (base_command_via_topic_) {
+    base_command_pub_ = get_node()->create_publisher<geometry_msgs::msg::Twist>(
+      get_node()->get_parameter("base_command_topic").as_string(), rclcpp::QoS(1));
+    base_command_rt_pub_ = std::make_shared<realtime_tools::RealtimePublisher<geometry_msgs::msg::Twist>>(
+      base_command_pub_);
+  }
+  active_pub_ = get_node()->create_publisher<std_msgs::msg::Bool>("~/active", rclcpp::QoS(1).transient_local());
+  active_pub_->publish(std_msgs::msg::Bool{});
+  navigator_received_ns_.store(0);
   model_ = std::make_shared<WholeBodyModel>();
   task_manager_ = std::make_unique<TaskManager>(
     get_node()->get_node_parameters_interface(), get_node()->get_logger());
@@ -457,7 +487,13 @@ controller_interface::CallbackReturn TaskPriorityController::on_configure(
   configure_solver();
   param_callback_handle_ = get_node()->add_on_set_parameters_callback(
     std::bind(&TaskPriorityController::on_parameters_set, this, std::placeholders::_1));
-  refresh_task_manager();
+  try {
+    refresh_task_manager();
+  } catch (const std::exception & ex) {
+    RCLCPP_ERROR(get_node()->get_logger(), "Failed to configure task hierarchy: %s", ex.what());
+    capsule_observer_.reset();
+    return controller_interface::CallbackReturn::ERROR;
+  }
   RCLCPP_INFO(
     get_node()->get_logger(),
     "TaskPriorityController frames: world='%s' base='%s' left_tip='%s' right_tip='%s'",
@@ -490,6 +526,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_configure(
     [this](const NavigatorMsg::SharedPtr msg)
     {
       navigator_buffer_.writeFromNonRT(msg);
+      navigator_received_ns_.store(get_node()->now().nanoseconds());
     });
   configure_external_interfaces();
 
@@ -548,6 +585,10 @@ void TaskPriorityController::rebuild_backend()
 {
   backend_ = backend_loader_->createSharedInstance(backend_plugin_name_);
   backend_->configure(*model_, resolve_robot_description(), get_node()->get_logger());
+  WholeBodyState neutral;
+  neutral.joint_positions = Eigen::VectorXd::Zero(model_->all_joint_names().size());
+  neutral.joint_velocities = neutral.joint_positions;
+  backend_->update(neutral);
 }
 
 void TaskPriorityController::configure_solver()
@@ -587,7 +628,10 @@ void TaskPriorityController::refresh_task_manager()
 {
   task_manager_ = std::make_unique<TaskManager>(
     get_node()->get_node_parameters_interface(), get_node()->get_logger());
-  task_manager_->configure(TaskContext{model_});
+  capsule_observer_.reset();
+  task_manager_->configure(TaskContext{model_, backend_});
+  capsule_observer_ = std::make_unique<CapsuleObserver>(task_manager_->tasks(),
+    get_node()->get_node_base_interface()->get_fully_qualified_name(), get_node()->get_node_base_interface()->get_context());
 }
 
 bool TaskPriorityController::apply_runtime_tuning_command(
@@ -716,8 +760,20 @@ rcl_interfaces::msg::SetParametersResult TaskPriorityController::on_parameters_s
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
 
+  for (const auto & parameter : parameters) {
+    const auto & name = parameter.get_name();
+    if ((name == "base_command_mode" || name == "base_command_topic" || name == "navigator_timeout") &&
+        parameter != get_node()->get_parameter(name)) {
+      result.successful = false;
+      result.reason = name + " requires reloading the controller";
+      return result;
+    }
+  }
+
   ParameterUpdateGuard pending(parameter_update_pending_);
   std::scoped_lock lock(task_mutex_);
+  const auto collision_validation = validate_collision_parameter_updates(parameters, task_manager_->tasks(), false);
+  if (!collision_validation.successful) {return collision_validation;}
   for (const auto & parameter : parameters) {
     if (parameter.get_name() == "dls_lambda") {
       if (parameter.as_double() <= 0.0) {
@@ -762,7 +818,12 @@ rcl_interfaces::msg::SetParametersResult TaskPriorityController::on_parameters_s
       }
 
       std::string message;
-      if (field == "gain") {
+      if (field == "enabled") {
+        if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL ||
+          !task_manager_->set_task_enabled(task_id, parameter.as_bool(), message)) {
+          result.successful = false; result.reason = "Invalid task enabled parameter"; return result;
+        }
+      } else if (field == "gain") {
         const auto values = parameter.as_double_array();
         if (!values_are_non_negative(values)) {
           result.successful = false;
@@ -790,6 +851,7 @@ rcl_interfaces::msg::SetParametersResult TaskPriorityController::on_parameters_s
     }
   }
 
+  validate_collision_parameter_updates(parameters, task_manager_->tasks(), true);
   return result;
 }
 
@@ -1131,15 +1193,27 @@ void TaskPriorityController::publish_controller_output(
 controller_interface::CallbackReturn TaskPriorityController::on_activate(
   const rclcpp_lifecycle::State &)
 {
+  if (base_command_pub_ && !base_command_rt_pub_) {
+    base_command_rt_pub_ = std::make_shared<realtime_tools::RealtimePublisher<geometry_msgs::msg::Twist>>(
+      base_command_pub_);
+  }
   reset_commands();
   publish_zero_controller_output(get_node()->now());
+  std_msgs::msg::Bool active;
+  active.data = true;
+  active_pub_->publish(active);
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
 controller_interface::CallbackReturn TaskPriorityController::on_deactivate(
   const rclcpp_lifecycle::State &)
 {
+  if (active_pub_) {active_pub_->publish(std_msgs::msg::Bool{});}
   reset_commands();
+  // Join the publishing thread before the final zero, so a queued command
+  // cannot be delivered after the lifecycle transition.
+  base_command_rt_pub_.reset();
+  if (base_command_pub_) {base_command_pub_->publish(geometry_msgs::msg::Twist{});}
   publish_zero_controller_output(get_node()->now());
   return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -1147,16 +1221,28 @@ controller_interface::CallbackReturn TaskPriorityController::on_deactivate(
 controller_interface::CallbackReturn TaskPriorityController::on_cleanup(
   const rclcpp_lifecycle::State &)
 {
+  if (active_pub_) {active_pub_->publish(std_msgs::msg::Bool{});}
   reset_commands();
+  // Join the publishing thread before the final zero, so a queued command
+  // cannot be delivered after the lifecycle transition.
+  base_command_rt_pub_.reset();
+  if (base_command_pub_) {base_command_pub_->publish(geometry_msgs::msg::Twist{});}
   publish_zero_controller_output(get_node()->now());
+  capsule_observer_.reset();
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
 controller_interface::CallbackReturn TaskPriorityController::on_shutdown(
   const rclcpp_lifecycle::State &)
 {
+  if (active_pub_) {active_pub_->publish(std_msgs::msg::Bool{});}
   reset_commands();
+  // Join the publishing thread before the final zero, so a queued command
+  // cannot be delivered after the lifecycle transition.
+  base_command_rt_pub_.reset();
+  if (base_command_pub_) {base_command_pub_->publish(geometry_msgs::msg::Twist{});}
   publish_zero_controller_output(get_node()->now());
+  capsule_observer_.reset();
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
@@ -1164,6 +1250,21 @@ void TaskPriorityController::reset_commands()
 {
   for (auto & interface : command_interfaces_) {
     interface.set_value(0.0);
+  }
+  publish_base_command(Eigen::Matrix<double, 6, 1>::Zero());
+}
+
+void TaskPriorityController::publish_base_command(const Eigen::Matrix<double, 6, 1> & command)
+{
+  if (base_command_rt_pub_ && base_command_rt_pub_->trylock()) {
+    auto & msg = base_command_rt_pub_->msg_;
+    msg.linear.x = command(0);
+    msg.linear.y = command(1);
+    msg.linear.z = command(2);
+    msg.angular.x = command(3);
+    msg.angular.y = command(4);
+    msg.angular.z = command(5);
+    base_command_rt_pub_->unlockAndPublish();
   }
 }
 
@@ -1243,7 +1344,7 @@ controller_interface::return_type TaskPriorityController::update(
   const rclcpp::Duration &)
 {
   const size_t expected_command_interface_count =
-    6U + left_arm_joints_.size() + right_arm_joints_.size();
+    (base_command_via_topic_ ? 0U : 6U) + left_arm_joints_.size() + right_arm_joints_.size();
   if (command_interfaces_.size() != expected_command_interface_count) {
     RCLCPP_ERROR_THROTTLE(
       get_node()->get_logger(), *get_node()->get_clock(), 2000,
@@ -1256,7 +1357,10 @@ controller_interface::return_type TaskPriorityController::update(
   process_pending_runtime_tuning();
 
   auto navigator_msg = navigator_buffer_.readFromRT();
-  if (!navigator_msg || !(*navigator_msg)) {
+  const auto received_ns = navigator_received_ns_.load();
+  const auto age_ns = time.nanoseconds() - received_ns;
+  if (!navigator_msg || !(*navigator_msg) ||
+      (navigator_timeout_ > 0.0 && (age_ns < 0 || age_ns > navigator_timeout_ * 1e9))) {
     reset_commands();
     return controller_interface::return_type::OK;
   }
@@ -1307,8 +1411,9 @@ controller_interface::return_type TaskPriorityController::update(
 
     std::scoped_lock lock(task_mutex_);
     backend_->update(state_);
-    const auto task_outputs = task_manager_->update_all(state_, *backend_);
+    const auto & task_outputs = task_manager_->update_all_into(state_, *backend_);
     command = solver_.solve(task_outputs);
+    task_manager_->finalize_command(command, time.nanoseconds());
     publish_hierarchy_state(time);
     publish_task_states(task_outputs);
   }
@@ -1322,13 +1427,17 @@ controller_interface::return_type TaskPriorityController::update(
     }
   }
 
-  for (Eigen::Index i = 0; i < 6; ++i) {
-    command_interfaces_[i].set_value(base_command(i));
+  if (base_command_via_topic_) {
+    publish_base_command(base_command);
+  } else {
+    for (Eigen::Index i = 0; i < 6; ++i) {
+      command_interfaces_[i].set_value(base_command(i));
+    }
   }
 
   const Eigen::Index left_offset = static_cast<Eigen::Index>(model_->left_offset());
   const Eigen::Index right_offset = static_cast<Eigen::Index>(model_->right_offset());
-  size_t command_interface_index = 6U;
+  size_t command_interface_index = base_command_via_topic_ ? 0U : 6U;
   for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(left_arm_joints_.size()); ++i) {
     command_interfaces_[command_interface_index].set_value(
       command.generalized_velocity(left_offset + i));

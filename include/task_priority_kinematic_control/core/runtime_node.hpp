@@ -2,6 +2,7 @@
 
 #include "task_priority_kinematic_control/core/hierarchy_solver.hpp"
 #include "task_priority_kinematic_control/core/task_manager.hpp"
+#include "task_priority_kinematic_control/core/capsule_observer.hpp"
 #include "task_priority_kinematic_control/core/whole_body_model.hpp"
 #include "task_priority_kinematic_control/kinematics/kinematics_backend.hpp"
 
@@ -64,6 +65,7 @@ private:
   WholeBodyState state_;
   std::unique_ptr<TaskManager> task_manager_;
   HierarchySolver solver_;
+  std::unique_ptr<CapsuleObserver> capsule_observer_;
 
   pluginlib::ClassLoader<KinematicsBackend> backend_loader_;
   KinematicsBackendPtr backend_;

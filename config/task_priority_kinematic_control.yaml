@@ -27,8 +27,8 @@ task_priority_runtime:
     navigator_topic: /cirtesub/navigator/navigation
     joint_states_topic: /cirtesub/alpha/joint_states
     base_command_topic: /cirtesub/controller/task_priority/base_cmd
-    left_arm_command_topic: /cirtesub/controller/alpha_left_forward_velocity_controller/commands
-    right_arm_command_topic: /cirtesub/controller/alpha_right_forward_velocity_controller/commands
+    left_arm_command_topic: /cirtesub/alpha/controller/alpha_left_forward_velocity_controller/commands
+    right_arm_command_topic: /cirtesub/alpha/controller/alpha_right_forward_velocity_controller/commands
 
     task_ids:
       - self_collision_avoidance
@@ -48,11 +48,32 @@ task_priority_runtime:
     tasks.self_collision_avoidance.activation_distance: 0.12
     tasks.self_collision_avoidance.gain_scalar: 1.0
     tasks.self_collision_avoidance.max_repulsive_velocity: 0.08
-    tasks.self_collision_avoidance.check_adjacent_links: false
-    tasks.self_collision_avoidance.include_link_substrings:
-      - base_link
-      - alpha_left
-      - alpha_right
+    tasks.self_collision_avoidance.parallel_epsilon: 1.0e-8
+    tasks.self_collision_avoidance.segment_length_epsilon: 1.0e-9
+    tasks.self_collision_avoidance.degenerate_axis_distance: 1.0e-6
+    tasks.self_collision_avoidance.publish_capsules: true
+    tasks.self_collision_avoidance.capsule_publish_rate: 1.0
+    # Initial test radius; this does not guarantee full physical coverage.
+    tasks.self_collision_avoidance.capsule_names:
+      - alpha_right_proximal
+      - alpha_right_distal
+      - alpha_left_proximal
+      - alpha_left_distal
+    tasks.self_collision_avoidance.capsules.alpha_right_proximal.start_frame: cirtesub/alpha_right/m2_joint_link
+    tasks.self_collision_avoidance.capsules.alpha_right_proximal.end_frame: cirtesub/alpha_right/m2_1_2_link
+    tasks.self_collision_avoidance.capsules.alpha_right_proximal.radius: 0.04
+    tasks.self_collision_avoidance.capsules.alpha_right_distal.start_frame: cirtesub/alpha_right/m2_1_2_link
+    tasks.self_collision_avoidance.capsules.alpha_right_distal.end_frame: cirtesub/alpha_right/ee_base_link
+    tasks.self_collision_avoidance.capsules.alpha_right_distal.radius: 0.04
+    tasks.self_collision_avoidance.capsules.alpha_left_proximal.start_frame: cirtesub/alpha_left/m2_joint_link
+    tasks.self_collision_avoidance.capsules.alpha_left_proximal.end_frame: cirtesub/alpha_left/m2_1_2_link
+    tasks.self_collision_avoidance.capsules.alpha_left_proximal.radius: 0.04
+    tasks.self_collision_avoidance.capsules.alpha_left_distal.start_frame: cirtesub/alpha_left/m2_1_2_link
+    tasks.self_collision_avoidance.capsules.alpha_left_distal.end_frame: cirtesub/alpha_left/ee_base_link
+    tasks.self_collision_avoidance.capsules.alpha_left_distal.radius: 0.04
+    tasks.self_collision_avoidance.ignored_collision_pairs:
+      - "alpha_right_proximal,alpha_right_distal"
+      - "alpha_left_proximal,alpha_left_distal"
 
     tasks.left_pose.plugin: task_priority_kinematic_control/EndEffectorPoseTask
     tasks.left_pose.enabled: true

@@ -2,6 +2,7 @@
 
 #include "task_priority_kinematic_control/core/hierarchy_solver.hpp"
 #include "task_priority_kinematic_control/core/task_manager.hpp"
+#include "task_priority_kinematic_control/core/capsule_observer.hpp"
 #include "task_priority_kinematic_control/core/whole_body_model.hpp"
 #include "task_priority_kinematic_control/kinematics/kinematics_backend.hpp"
 #include "task_priority_kinematic_control/msg/controller_output.hpp"
@@ -18,11 +19,14 @@
 #include "control_msgs/action/follow_joint_trajectory.hpp"
 #include "controller_interface/controller_interface.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/twist.hpp"
+#include "realtime_tools/realtime_publisher.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "realtime_tools/realtime_buffer.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "sura_msgs/msg/navigator.hpp"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
@@ -123,6 +127,7 @@ private:
     const std::shared_ptr<RuntimeTuningCommand> & command,
     std::string & message);
   void reset_commands();
+  void publish_base_command(const Eigen::Matrix<double, 6, 1> & command);
   void publish_zero_controller_output(const rclcpp::Time & time);
   void execute_task_trajectory_goal(
     const std::string & task_id,
@@ -134,6 +139,7 @@ private:
   WholeBodyState state_;
   std::unique_ptr<TaskManager> task_manager_;
   HierarchySolver solver_;
+  std::unique_ptr<CapsuleObserver> capsule_observer_;
 
   std::unique_ptr<pluginlib::ClassLoader<KinematicsBackend>> backend_loader_;
   KinematicsBackendPtr backend_;
@@ -161,6 +167,12 @@ private:
 
   std::string backend_plugin_name_;
   std::string body_velocity_controller_name_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr active_pub_;
+  bool base_command_via_topic_{false};
+  double navigator_timeout_{0.0};
+  std::atomic<int64_t> navigator_received_ns_{0};
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr base_command_pub_;
+  std::shared_ptr<realtime_tools::RealtimePublisher<geometry_msgs::msg::Twist>> base_command_rt_pub_;
   std::vector<std::string> left_arm_joints_;
   std::vector<std::string> right_arm_joints_;
   std::vector<std::string> task_ids_;

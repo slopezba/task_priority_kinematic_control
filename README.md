@@ -505,10 +505,10 @@ body_velocity/angular.z
 En ambos modos:
 
 ```text
-/cirtesub/controller/alpha_left_forward_velocity_controller/commands
+/cirtesub/alpha/controller/alpha_left_forward_velocity_controller/commands
 std_msgs/msg/Float64MultiArray
 
-/cirtesub/controller/alpha_right_forward_velocity_controller/commands
+/cirtesub/alpha/controller/alpha_right_forward_velocity_controller/commands
 std_msgs/msg/Float64MultiArray
 ```
 
@@ -894,3 +894,7 @@ El paquete depende de:
 - Para que una task de pose se mueva necesita recibir un objetivo, salvo tasks con objetivo por defecto como `EndEffectorPositionTask`.
 - El backend Pinocchio está registrado, pero no debe usarse en ejecución hasta que se implemente.
 - Si el nodo no recibe navegación o joints, no publica comandos útiles y reporta `waiting_for_state`.
+
+## Cápsulas manuales para evitar autocolisiones
+
+`SelfCollisionAvoidanceTask` utiliza cápsulas definidas en parámetros YAML, sin extraerlas de mallas DAE. La [documentación de cápsulas manuales](docs/self_collision_avoidance.md) describe la configuración, las parejas explícitas, la parada por degeneración y la visualización RViz fuera del bucle de control.

@@ -118,7 +118,9 @@ RuntimeNode::RuntimeNode(const rclcpp::NodeOptions & options)
   configure_model();
   configure_backend();
   configure_solver();
-  task_manager_->configure(TaskContext{model_});
+  task_manager_->configure(TaskContext{model_, backend_});
+  capsule_observer_ = std::make_unique<CapsuleObserver>(task_manager_->tasks(),
+    get_fully_qualified_name(), get_node_base_interface()->get_context());
   configure_publishers();
   configure_subscribers();
   configure_services();
@@ -148,8 +150,8 @@ void RuntimeNode::declare_parameters()
   declare_if_missing<std::string>(*this, "navigator_topic", "/cirtesub/navigator/navigation");
   declare_if_missing<std::string>(*this, "joint_states_topic", "/cirtesub/alpha/joint_states");
   declare_if_missing<std::string>(*this, "base_command_topic", "/cirtesub/controller/task_priority/base_cmd");
-  declare_if_missing<std::string>(*this, "left_arm_command_topic", "/cirtesub/controller/alpha_left_forward_velocity_controller/commands");
-  declare_if_missing<std::string>(*this, "right_arm_command_topic", "/cirtesub/controller/alpha_right_forward_velocity_controller/commands");
+  declare_if_missing<std::string>(*this, "left_arm_command_topic", "/cirtesub/alpha/controller/alpha_left_forward_velocity_controller/commands");
+  declare_if_missing<std::string>(*this, "right_arm_command_topic", "/cirtesub/alpha/controller/alpha_right_forward_velocity_controller/commands");
   declare_if_missing<std::vector<std::string>>(*this, "task_ids", {});
   for (const auto & task_id : this->get_parameter("task_ids").as_string_array()) {
     const std::string prefix = "tasks." + task_id + ".";
@@ -157,6 +159,10 @@ void RuntimeNode::declare_parameters()
     declare_if_missing<bool>(*this, prefix + "enabled", true);
     declare_if_missing<double>(*this, prefix + "priority", 0.0);
     declare_if_missing<std::string>(*this, prefix + "group", "default");
+    if (this->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/SelfCollisionAvoidanceTask") {
+      declare_collision_parameters(get_node_parameters_interface(), prefix);
+    }
     declare_if_missing<std::string>(*this, prefix + "frame_id", "");
     declare_if_missing<std::vector<double>>(*this, prefix + "gain", {});
     declare_if_missing<std::vector<double>>(*this, prefix + "lower_limits", {});
@@ -165,7 +171,9 @@ void RuntimeNode::declare_parameters()
     declare_if_missing<double>(*this, prefix + "alpha", 0.1);
     declare_if_missing<double>(*this, prefix + "delta", 0.15);
     declare_if_missing<double>(*this, prefix + "eps", 1e-4);
-    declare_if_missing<double>(*this, prefix + "gain_scalar", 0.5);
+    declare_if_missing<double>(*this, prefix + "gain_scalar",
+      this->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/SelfCollisionAvoidanceTask" ? 1.0 : 0.5);
     declare_if_missing<std::vector<std::string>>(*this, prefix + "joint_names", {});
     declare_if_missing<std::vector<double>>(*this, prefix + "target", {});
     declare_if_missing<std::vector<int64_t>>(*this, prefix + "activation", {});
@@ -295,6 +303,10 @@ void RuntimeNode::rebuild_backend()
   backend_plugin_name_ = this->get_parameter("backend_plugin").as_string();
   backend_ = backend_loader_.createSharedInstance(backend_plugin_name_);
   backend_->configure(*model_, resolve_robot_description(), this->get_logger());
+  WholeBodyState neutral;
+  neutral.joint_positions = Eigen::VectorXd::Zero(model_->all_joint_names().size());
+  neutral.joint_velocities = neutral.joint_positions;
+  backend_->update(neutral);
 }
 
 void RuntimeNode::configure_solver()
@@ -484,8 +496,25 @@ void RuntimeNode::configure_services()
       const std::shared_ptr<srv::SwitchBackend::Request> request,
       std::shared_ptr<srv::SwitchBackend::Response> response) {
       try {
+        auto candidate = backend_loader_.createSharedInstance(request->backend_name);
+        candidate->configure(*model_, resolve_robot_description(), get_logger());
+        candidate->update(state_);
+        for (const auto & task : task_manager_->tasks()) {
+          auto collision = std::dynamic_pointer_cast<SelfCollisionAvoidanceTask>(task);
+          if (!collision) {continue;}
+          FrameState frame;
+          for (const auto & capsule : collision->capsules()) {
+            for (const auto & name : {collision->base_frame(), capsule.start_frame, capsule.end_frame}) {
+              if (!candidate->read_frame_state(name, frame) || frame.jacobian.rows() != 6 ||
+                frame.jacobian.cols() != static_cast<Eigen::Index>(model_->total_dofs()) ||
+                !frame.jacobian.allFinite() || !frame.pose.matrix().allFinite()) {
+                throw std::runtime_error("Backend cannot evaluate configured collision frame: " + name);
+              }
+            }
+          }
+        }
+        backend_ = candidate;
         backend_plugin_name_ = request->backend_name;
-        rebuild_backend();
         response->success = true;
         response->message = "Backend switched";
       } catch (const std::exception & ex) {
@@ -605,8 +634,9 @@ void RuntimeNode::timer_callback()
   }
 
   backend_->update(state_);
-  const auto task_outputs = task_manager_->update_all(state_, *backend_);
+  const auto & task_outputs = task_manager_->update_all_into(state_, *backend_);
   WholeBodyCommand command = solver_.solve(task_outputs);
+  task_manager_->finalize_command(command, this->now().nanoseconds());
   command.base_velocity = command.generalized_velocity.head(model_->base_dofs());
   command.left_arm_velocity = command.generalized_velocity.segment(model_->left_offset(), model_->left_arm_dofs());
   command.right_arm_velocity = command.generalized_velocity.segment(model_->right_offset(), model_->right_arm_dofs());
@@ -665,6 +695,8 @@ rcl_interfaces::msg::SetParametersResult RuntimeNode::on_parameters_set(
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
   result.reason = "accepted";
+  const auto collision_validation = validate_collision_parameter_updates(parameters, task_manager_->tasks(), false);
+  if (!collision_validation.successful) {return collision_validation;}
 
   for (const auto & parameter : parameters) {
     if (parameter.get_name() == "dls_lambda") {
@@ -708,7 +740,12 @@ rcl_interfaces::msg::SetParametersResult RuntimeNode::on_parameters_set(
       }
 
       std::string message;
-      if (field == "gain") {
+      if (field == "enabled") {
+        if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL ||
+          !task_manager_->set_task_enabled(task_id, parameter.as_bool(), message)) {
+          result.successful = false; result.reason = "Invalid task enabled parameter"; return result;
+        }
+      } else if (field == "gain") {
         const auto values = parameter.as_double_array();
         if (!values_are_non_negative(values)) {
           result.successful = false;
@@ -736,6 +773,7 @@ rcl_interfaces::msg::SetParametersResult RuntimeNode::on_parameters_set(
     }
   }
 
+  validate_collision_parameter_updates(parameters, task_manager_->tasks(), true);
   return result;
 }
 

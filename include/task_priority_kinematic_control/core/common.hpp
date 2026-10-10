@@ -48,6 +48,7 @@ struct TaskComputation
   Eigen::VectorXd error;
   Eigen::Isometry3d frame_pose = Eigen::Isometry3d::Identity();
   bool active = false;
+  bool stop_arm_motion = false;
   bool has_frame_pose = false;
   std::string frame_id;
   std::string status_message;

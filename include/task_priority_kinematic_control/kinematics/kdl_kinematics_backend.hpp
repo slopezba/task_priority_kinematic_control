@@ -23,6 +23,8 @@ public:
 
   FrameState get_frame_state(const std::string & frame_id) const override;
 
+  bool read_frame_state(const std::string & frame_id, FrameState & out) const override;
+
   std::shared_ptr<KinematicsBackend> clone() const override;
 
   FrameState compute_frame_state(
@@ -54,7 +56,6 @@ private:
     const std::string & frame_id,
     const ChainData & chain,
     const WholeBodyState & state) const;
-  void parse_collision_capsules(const std::string & robot_description);
 
   WholeBodyModel model_;
   rclcpp::Logger logger_ = rclcpp::get_logger("KDLKinematicsBackend");

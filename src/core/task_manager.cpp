@@ -17,6 +17,7 @@ TaskManager::TaskManager(
 
 void TaskManager::configure(const TaskContext & context)
 {
+  model_ = context.model;
   tasks_.clear();
   rclcpp::Parameter task_ids_param;
   if (!parameters_interface_->get_parameter("task_ids", task_ids_param)) {
@@ -40,18 +41,38 @@ void TaskManager::configure(const TaskContext & context)
   std::sort(tasks_.begin(), tasks_.end(), [](const auto & a, const auto & b) {
     return a->priority() < b->priority();
   });
+  computations_.resize(tasks_.size());
+  for (size_t i = 0; i < tasks_.size(); ++i) {tasks_[i]->prepare_computation(computations_[i]);}
 }
 
 std::vector<TaskComputation> TaskManager::update_all(
   const WholeBodyState & state,
   const KinematicsBackend & backend)
 {
-  std::vector<TaskComputation> outputs;
-  outputs.reserve(tasks_.size());
-  for (const auto & task : tasks_) {
-    outputs.push_back(task->update(state, backend));
+  return update_all_into(state, backend);
+}
+
+const std::vector<TaskComputation> & TaskManager::update_all_into(
+  const WholeBodyState & state, const KinematicsBackend & backend)
+{
+  for (size_t i = 0; i < tasks_.size(); ++i) {
+    tasks_[i]->update_into(state, backend, computations_[i]);
   }
-  return outputs;
+  return computations_;
+}
+
+void TaskManager::finalize_command(WholeBodyCommand & command, int64_t timestamp_ns)
+{
+  const bool stop = std::any_of(computations_.begin(), computations_.end(),
+    [](const TaskComputation & c) {return c.stop_arm_motion;});
+  if (stop && !tasks_.empty()) {
+    // Each task uses the same whole-body ordering. Zero only the arm segments.
+    // The caller passes a fully sized generalized command.
+    const auto & model = model_;
+    command.generalized_velocity.segment(model->left_offset(), model->left_arm_dofs()).setZero();
+    command.generalized_velocity.segment(model->right_offset(), model->right_arm_dofs()).setZero();
+  }
+  for (const auto & task : tasks_) {task->observe_command(command, timestamp_ns);}
 }
 
 bool TaskManager::set_task_enabled(const std::string & task_id, bool enabled, std::string & message)
@@ -205,6 +226,9 @@ bool TaskManager::reorder_tasks(const std::vector<std::string> & ordered_ids, st
     reordered.push_back(*it);
   }
   tasks_ = reordered;
+  computations_.clear();
+  computations_.resize(tasks_.size());
+  for (size_t i = 0; i < tasks_.size(); ++i) {tasks_[i]->prepare_computation(computations_[i]);}
   message = "Tasks reordered";
   return true;
 }

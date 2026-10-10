@@ -52,6 +52,8 @@ set(core_target ${PROJECT_NAME}_core)
 add_library(${core_target} SHARED
   src/core/whole_body_model.cpp
   src/core/hierarchy_solver.cpp
+  src/geometry/capsule_geometry.cpp
+  src/core/capsule_observer.cpp
   src/core/task_manager.cpp
   src/core/task_priority_controller.cpp
   src/core/runtime_node.cpp
@@ -71,6 +73,8 @@ add_library(${core_target} SHARED
   src/tasks/self_collision_avoidance_task.cpp
 )
 
+target_compile_features(${core_target} PUBLIC cxx_std_17)
+
 set_target_properties(${core_target} PROPERTIES OUTPUT_NAME ${PROJECT_NAME})
 
 target_include_directories(${core_target} PUBLIC
@@ -80,6 +84,7 @@ target_include_directories(${core_target} PUBLIC
 
 target_link_libraries(${core_target}
   Eigen3::Eigen
+  Threads::Threads
 )
 
 ament_target_dependencies(${core_target}
@@ -99,6 +104,7 @@ ament_target_dependencies(${core_target}
   sura_msgs
   sura_manipulation_actions
   trajectory_msgs
+  visualization_msgs
   urdf
 )
 
@@ -170,6 +176,21 @@ ament_export_dependencies(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+
+  foreach(collision_test IN ITEMS capsule_geometry self_collision_avoidance_task capsule_visualization)
+    ament_add_gtest(test_${collision_test} test/test_${collision_test}.cpp)
+    if(TARGET test_${collision_test})
+      target_link_libraries(test_${collision_test} ${core_target})
+      ament_target_dependencies(test_${collision_test} rclcpp visualization_msgs)
+    endif()
+  endforeach()
+
+
+  ament_add_gtest(test_controller_interfaces test/test_controller_interfaces.cpp)
+  if(TARGET test_controller_interfaces)
+    target_link_libraries(test_controller_interfaces ${core_target})
+    ament_target_dependencies(test_controller_interfaces rclcpp)
+  endif()
 
   ament_add_gtest(test_hierarchy_solver test/test_hierarchy_solver.cpp)
   if(TARGET test_hierarchy_solver)

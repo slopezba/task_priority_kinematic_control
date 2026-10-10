@@ -32,6 +32,10 @@ public:
     const WholeBodyState & state,
     const KinematicsBackend & backend);
 
+  const std::vector<TaskComputation> & update_all_into(
+    const WholeBodyState & state, const KinematicsBackend & backend);
+  void finalize_command(WholeBodyCommand & command, int64_t timestamp_ns);
+
   bool set_task_enabled(const std::string & task_id, bool enabled, std::string & message);
   bool set_task_pose_goal(
     const std::string & task_id,
@@ -73,6 +77,8 @@ private:
   rclcpp::Logger logger_;
   pluginlib::ClassLoader<TaskBase> loader_;
   std::vector<std::shared_ptr<TaskBase>> tasks_;
+  std::vector<TaskComputation> computations_;
+  std::shared_ptr<WholeBodyModel> model_;
 };
 
 }  // namespace task_priority_kinematic_control

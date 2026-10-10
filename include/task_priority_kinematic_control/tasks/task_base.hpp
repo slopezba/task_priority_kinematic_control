@@ -18,6 +18,8 @@ namespace task_priority_kinematic_control
 struct TaskContext
 {
   std::shared_ptr<WholeBodyModel> model;
+  // Initialization access only; never keep a plugin alive beyond its host loader.
+  std::weak_ptr<KinematicsBackend> backend = {};
 };
 
 class TaskBase
@@ -34,6 +36,13 @@ public:
   virtual TaskComputation update(
     const WholeBodyState & state,
     const KinematicsBackend & backend) = 0;
+
+  // Compatibility adapters preserve plugins using the original by-value update API.
+  virtual void prepare_computation(TaskComputation &) const {}
+  virtual void update_into(
+    const WholeBodyState & state, const KinematicsBackend & backend, TaskComputation & out)
+  {out = update(state, backend);}
+  virtual void observe_command(const WholeBodyCommand &, int64_t) {}
 
   virtual bool set_pose_goal(const geometry_msgs::msg::PoseStamped & goal);
   virtual bool set_joint_target(const std::vector<double> & target, std::string & message);
