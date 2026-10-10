@@ -1,4 +1,4 @@
-# Manual capsule self-collision avoidance
+# Manual capsule and finite-plane collision avoidance
 
 The existing `SelfCollisionAvoidanceTask` now uses manually specified capsule axes between
 frame origins. The task never extracts geometry from URDF collision meshes. KDL still parses
@@ -43,6 +43,74 @@ with the two same-arm adjacent pairs explicitly excluded. The four remaining che
 - right proximal / left distal;
 - right distal / left proximal;
 - right distal / left distal.
+
+## Configurable finite planes
+
+The same task can additionally repel capsules from finite, one-sided rectangular planes.
+`plane_names` defaults to an empty string array, preserving capsule-only behavior. Each
+plane name follows the capsule naming rules and has its own reference frame and selection:
+
+```yaml
+tasks.self_collision_avoidance.plane_names: [body_guard]
+tasks.self_collision_avoidance.planes.body_guard.reference_frame: cirtesub/base_link
+tasks.self_collision_avoidance.planes.body_guard.normal_axis: x
+tasks.self_collision_avoidance.planes.body_guard.position: 0.335
+tasks.self_collision_avoidance.planes.body_guard.allowed_side: positive
+tasks.self_collision_avoidance.planes.body_guard.bounds_min: [-0.265, -0.141]
+tasks.self_collision_avoidance.planes.body_guard.bounds_max: [0.265, 0.459]
+tasks.self_collision_avoidance.planes.body_guard.checked_capsules:
+  - alpha_right_distal
+  - alpha_left_distal
+```
+
+`reference_frame` is any frame evaluable with a finite pose and 6-by-model-DoFs Jacobian
+by the configured kinematics backend. Omission or an empty string selects the model's
+configured `base_frame`; no robot frame name is hardcoded in the implementation. The frame
+is read from the existing kinematics cache, not resolved by waiting on an external TF
+broadcaster. A plane follows both the translation and rotation of its reference frame.
+
+`normal_axis` is `x`, `y`, or `z` in that frame. `position` is the plane's coordinate on
+the normal axis, in metres. `allowed_side` is `positive` or `negative` along that local
+axis. The two-element double arrays `bounds_min` and `bounds_max` specify the rectangle
+limits on the tangential axes in ascending order: X-normal uses YZ, Y-normal uses XZ,
+and Z-normal uses XY. These five geometry fields must be supplied explicitly; only the
+reference frame and capsule selection have defaults. Each minimum must be strictly below its corresponding maximum,
+and all coordinates and dimensions must be finite. Unknown fields, unknown frames,
+duplicate names, and unknown/duplicate selected capsules are rejected.
+
+Omitting `checked_capsules`, or providing an empty string array, selects all capsules.
+Capsule-pair exclusions do not affect capsule/plane checks. The supplied configuration
+checks only the distal capsules against `body_guard`: the proximal capsule's mounting
+endpoint is within 2 cm of X=0.335 in every posture, so its radius intersects this plane
+unavoidably. Including it would create a persistent, unsatisfiable repulsion request.
+All positions, dimensions and selections can be changed in YAML and require reloading
+the controller. An empty `plane_names` list disables plane checks; remove their definition
+fields as well to satisfy configuration validation.
+
+The example rectangle is 0.53 m wide by 0.60 m tall, centred at Y=0, Z=0.159, with local
+X=0.335. Its marker shows exactly those bounds. For control, each capsule segment is
+clipped to the tangential rectangle expanded on each side by its radius. Segments that
+do not intersect that expanded region produce an inactive, zero row. Of the remaining
+segment, the point with minimum allowed-side normal coordinate is selected. Its clearance
+is `allowed_sign * (point[normal_axis] - position) - radius`. This is a conservative
+normal barrier at edges/corners, **not Euclidean capsule-to-rectangle distance**. There
+is no extra tangential expansion by `activation_distance`, so entering or leaving the
+expanded footprint can switch the row abruptly; the barrier is deliberately finite.
+
+Negative clearance continues to request motion towards the allowed side after crossing
+the plane. Its known normal never triggers `degenerate_axis_distance`. The Jacobian
+includes the selected clipping boundary's derivative and reference-frame angular and
+linear motion. Common rigid motion of the whole robot cannot change the distance. At
+ties or boundary switches the derivative is nonsmooth and a deterministic branch is used.
+The same gains, thresholds, velocity limit, hierarchy and command-deficit metrics apply
+to capsule and plane checks; the existing solver still provides no hard barrier guarantee.
+
+Rows for capsule/plane pairs follow the original capsule-pair rows, ordered first by
+`plane_names` and then by the plane's selected capsule list (or `capsule_names` when all
+are selected). Diagnostics add `planes` and `checked_plane_pairs` counts and identify a
+plane pair as `<capsule_name>,plane:<plane_name>`.
+
+## Shared tuning parameters
 
 | Parameter | Default | Meaning |
 |---|---:|---|
@@ -105,7 +173,7 @@ negative capsule overlap. A checked pair below `activation_distance` requests:
 v = clamp(gain_scalar * (activation_distance - clearance), 0, max_repulsive_velocity)
 ```
 
-There is one fixed output row per checked pair, in generated pair order. Inactive and
+There is one fixed output row per checked capsule or plane pair, in generated pair order. Inactive and
 undefined rows are zero; `TaskComputation.active` is true when a valid repulsion row exists.
 The original task-priority solver is unchanged. `safe_distance` is a metric, not a hard
 barrier constraint. Competing rows, damping and final velocity limits can prevent satisfying
@@ -141,6 +209,11 @@ compatible with the default RViz subscription; any DDS wait is confined to the o
 snapshot timestamps. Each capsule has a cylinder (ID 0) and endpoint spheres (IDs 1 and 2),
 in namespace `self_collision_avoidance/<capsule_name>`. All diameters equal twice the radius.
 Right-arm markers are blue, left-arm markers green, and active/degenerate capsules red.
+Planes are translucent amber rectangular triangle markers in namespace
+`self_collision_avoidance/planes/<plane_name>` with ID 0. Both windings are emitted for
+visibility from either side; active planes are red. Corners are transformed from each
+reference frame into the same base frame and use the same snapshot timestamps. Invalid
+geometry deletes the affected markers instead of displaying stale positions.
 Zero-length capsules show one sphere and delete the other primitives. Publication disablement,
 task disablement and lifecycle cleanup delete only this observer's own markers.
 
@@ -168,8 +241,11 @@ reactive velocities and damping do **not** provide a formal collision-free or CB
 
 ## Verification
 
-Focused tests cover the sixteen requested distance cases, invalid inputs, pair validation,
+Focused tests cover the sixteen requested capsule distance cases, invalid inputs, pair validation,
 finite-difference Jacobians, moving-base invariance, stop/recovery and marker geometry.
+Plane tests add X/Y/Z normals, both allowed sides, radius-expanded finite bounds, clipping
+gradients, contact/crossing recovery, selected/multiple planes, moving and rotated reference
+frames, parameter declarations, runtime failure and rectangle publication/deletion.
 Snapshot tests retain an old consumer slot through 100,000 publications and check concurrent
 snapshot consistency. A ROS integration test verifies publication on the dedicated observer
 executor and deletion when visualization is disabled. Build and run from the workspace root:

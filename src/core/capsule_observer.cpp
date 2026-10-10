@@ -2,6 +2,7 @@
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 
@@ -31,10 +32,11 @@ void position(Marker & marker, const Eigen::Vector3d & p)
 
 visualization_msgs::msg::MarkerArray capsule_markers(
   const std::vector<ManualCapsule> & definitions, const CollisionSnapshot & snapshot,
-  const std::string & frame, double length_epsilon)
+  const std::string & frame, double length_epsilon,
+  const std::vector<ManualPlane> & planes)
 {
   visualization_msgs::msg::MarkerArray array;
-  array.markers.reserve(3 * definitions.size());
+  array.markers.reserve(3 * definitions.size() + planes.size());
   for (size_t i = 0; i < definitions.size(); ++i) {
     auto cylinder = marker(definitions[i], frame, 0, Marker::CYLINDER);
     auto start = marker(definitions[i], frame, 1, Marker::SPHERE);
@@ -62,14 +64,38 @@ visualization_msgs::msg::MarkerArray capsule_markers(
     for (auto * m : {&cylinder, &start, &end}) {m->header.stamp = static_cast<builtin_interfaces::msg::Time>(rclcpp::Time(snapshot.timestamp_ns));}
     array.markers.push_back(std::move(cylinder)); array.markers.push_back(std::move(start)); array.markers.push_back(std::move(end));
   }
+  for (size_t i = 0; i < planes.size(); ++i) {
+    Marker m;
+    m.header.frame_id = frame;
+    m.header.stamp = static_cast<builtin_interfaces::msg::Time>(rclcpp::Time(snapshot.timestamp_ns));
+    m.ns = "self_collision_avoidance/planes/" + planes[i].name;
+    m.id = 0; m.type = Marker::TRIANGLE_LIST; m.action = Marker::ADD;
+    m.pose.orientation.w = 1.0;
+    m.scale.x = m.scale.y = m.scale.z = 1.0;
+    m.color.r = 1.0f; m.color.g = 0.7f; m.color.b = 0.1f; m.color.a = 0.35f;
+    if (i >= snapshot.planes.size() || !snapshot.planes[i].valid) {
+      m.action = Marker::DELETE;
+    } else {
+      const auto & plane = snapshot.planes[i];
+      // Both windings keep the zero-thickness rectangle visible from either side.
+      for (const auto corner : {0, 1, 2, 0, 2, 3, 2, 1, 0, 3, 2, 0}) {
+        geometry_msgs::msg::Point point;
+        point.x = plane.corners[corner].x(); point.y = plane.corners[corner].y();
+        point.z = plane.corners[corner].z(); m.points.push_back(point);
+      }
+      if (plane.highlighted) {m.color.g = m.color.b = 0.0f;}
+    }
+    array.markers.push_back(std::move(m));
+  }
   return array;
 }
 
 visualization_msgs::msg::MarkerArray delete_capsule_markers(
-  const std::vector<ManualCapsule> & definitions, const std::string & frame)
+  const std::vector<ManualCapsule> & definitions, const std::string & frame,
+  const std::vector<ManualPlane> & planes)
 {
   CollisionSnapshot snapshot;
-  return capsule_markers(definitions, snapshot, frame, 1e-9);
+  return capsule_markers(definitions, snapshot, frame, 1e-9, planes);
 }
 
 CapsuleObserver::CapsuleObserver(const std::vector<std::shared_ptr<TaskBase>> & tasks,
@@ -112,7 +138,7 @@ CapsuleObserver::~CapsuleObserver()
   // Lifecycle cleanup may wait on DDS; the control update never calls this destructor.
   for (auto & entry : entries_) {
     if (entry.visible && rclcpp::ok(node_->get_node_base_interface()->get_context())) {
-      try {entry.publisher->publish(delete_capsule_markers(entry.task->capsules(), entry.task->base_frame()));}
+      try {entry.publisher->publish(delete_capsule_markers(entry.task->capsules(), entry.task->base_frame(), entry.task->planes()));}
       catch (const std::exception &) {}
     }
   }
@@ -126,11 +152,7 @@ void CapsuleObserver::tick()
     if (entry.snapshot) {
       const auto & metrics = entry.snapshot->metrics;
       if (metrics.stop_arms && (!entry.previously_stopped || now - entry.last_warning >= std::chrono::seconds(1))) {
-        std::string pair = "unknown";
-        if (metrics.fault_pair < entry.task->checked_pairs().size()) {
-          const auto indices = entry.task->checked_pairs()[metrics.fault_pair];
-          pair = entry.task->capsules()[indices[0]].name + "," + entry.task->capsules()[indices[1]].name;
-        }
+        const auto pair = entry.task->collision_pair_name(metrics.fault_pair);
         RCLCPP_WARN(node_->get_logger(), "Collision geometry error: arm velocities set to zero; pair=%s degenerate_pairs=%zu invalid_geometry=%d",
           pair.c_str(), metrics.degenerate_pairs, metrics.invalid_geometry);
         entry.last_warning = now;
@@ -142,7 +164,7 @@ void CapsuleObserver::tick()
     const bool display = entry.task->publish_capsules() && entry.snapshot && entry.snapshot->metrics.enabled;
     if (!display) {
       if (entry.visible) {
-        entry.publisher->publish(delete_capsule_markers(entry.task->capsules(), entry.task->base_frame()));
+        entry.publisher->publish(delete_capsule_markers(entry.task->capsules(), entry.task->base_frame(), entry.task->planes()));
         entry.visible = false;
       }
       continue;
@@ -150,7 +172,7 @@ void CapsuleObserver::tick()
     const double rate = entry.task->capsule_publish_rate();
     if (rate <= 0 || now - entry.last_publish < std::chrono::duration<double>(1.0 / rate)) {continue;}
     entry.publisher->publish(capsule_markers(entry.task->capsules(), *entry.snapshot,
-      entry.task->base_frame(), entry.task->segment_length_epsilon()));
+      entry.task->base_frame(), entry.task->segment_length_epsilon(), entry.task->planes()));
     entry.last_publish = now; entry.visible = true;
   }
 }
@@ -173,6 +195,7 @@ void declare_collision_parameters(
   declare("publish_capsules", rclcpp::ParameterValue(true));
   declare("capsule_publish_rate", rclcpp::ParameterValue(1.0));
   declare("capsule_names", rclcpp::ParameterValue(std::vector<std::string>{}));
+  declare("plane_names", rclcpp::ParameterValue(std::vector<std::string>{}));
   declare("ignored_collision_pairs", rclcpp::ParameterValue(std::vector<std::string>{}));
   rclcpp::Parameter names;
   parameters->get_parameter(prefix + "capsule_names", names);
@@ -180,6 +203,17 @@ void declare_collision_parameters(
     declare("capsules." + name + ".start_frame", rclcpp::ParameterValue(std::string{}));
     declare("capsules." + name + ".end_frame", rclcpp::ParameterValue(std::string{}));
     declare("capsules." + name + ".radius", rclcpp::ParameterValue(0.0));
+  }
+  parameters->get_parameter(prefix + "plane_names", names);
+  for (const auto & name : names.as_string_array()) {
+    const auto plane_prefix = "planes." + name + ".";
+    declare(plane_prefix + "reference_frame", rclcpp::ParameterValue(std::string{}));
+    declare(plane_prefix + "normal_axis", rclcpp::ParameterValue(std::string{}));
+    declare(plane_prefix + "position", rclcpp::ParameterValue(std::numeric_limits<double>::quiet_NaN()));
+    declare(plane_prefix + "allowed_side", rclcpp::ParameterValue(std::string{}));
+    declare(plane_prefix + "bounds_min", rclcpp::ParameterValue(std::vector<double>{}));
+    declare(plane_prefix + "bounds_max", rclcpp::ParameterValue(std::vector<double>{}));
+    declare(plane_prefix + "checked_capsules", rclcpp::ParameterValue(std::vector<std::string>{}));
   }
 }
 

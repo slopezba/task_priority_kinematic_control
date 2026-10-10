@@ -49,6 +49,33 @@ TEST(CapsuleVisualization, ClearOnlyOwnedMarkers)
   ASSERT_EQ(out.markers.size(),3u);
   for(const auto & marker:out.markers) {EXPECT_EQ(marker.action,Marker::DELETE); EXPECT_EQ(marker.ns,"self_collision_avoidance/one");}
 }
+TEST(PlaneVisualization, RectangleCornersDimensionsHighlightAndDeletion)
+{
+  ManualPlane plane; plane.name = "guard";
+  CollisionSnapshot snapshot; snapshot.timestamp_ns = 1230000000; snapshot.planes.resize(1);
+  auto & pose = snapshot.planes[0]; pose.valid = true;
+  pose.corners = {Eigen::Vector3d(.335, -.265, -.141), Eigen::Vector3d(.335, .265, -.141),
+    Eigen::Vector3d(.335, .265, .459), Eigen::Vector3d(.335, -.265, .459)};
+  const auto markers = capsule_markers({}, snapshot, "base", 1e-9, {plane});
+  ASSERT_EQ(markers.markers.size(), 1u); const auto & m = markers.markers[0];
+  EXPECT_EQ(m.type, Marker::TRIANGLE_LIST); EXPECT_EQ(m.action, Marker::ADD);
+  EXPECT_EQ(m.ns, "self_collision_avoidance/planes/guard"); EXPECT_EQ(m.id, 0);
+  EXPECT_EQ(m.header.frame_id, "base"); EXPECT_EQ(m.header.stamp.sec, 1);
+  EXPECT_EQ(m.header.stamp.nanosec, 230000000u); ASSERT_EQ(m.points.size(), 12u);
+  EXPECT_DOUBLE_EQ(m.scale.x, 1); EXPECT_DOUBLE_EQ(m.pose.orientation.w, 1);
+  EXPECT_NEAR(m.points[1].y - m.points[0].y, .53, 1e-12);
+  EXPECT_NEAR(m.points[2].z - m.points[1].z, .60, 1e-12);
+  for (const auto & p : m.points) {EXPECT_DOUBLE_EQ(p.x, .335);}
+  EXPECT_GT(m.color.a, 0); EXPECT_LT(m.color.a, 1); EXPECT_GT(m.color.g, 0);
+  pose.highlighted = true;
+  const auto active = capsule_markers({}, snapshot, "base", 1e-9, {plane});
+  EXPECT_FLOAT_EQ(active.markers[0].color.r, 1); EXPECT_FLOAT_EQ(active.markers[0].color.g, 0);
+  const auto deleted = delete_capsule_markers({}, "base", {plane});
+  ASSERT_EQ(deleted.markers.size(), 1u); EXPECT_EQ(deleted.markers[0].action, Marker::DELETE);
+  EXPECT_EQ(deleted.markers[0].ns, m.ns); EXPECT_EQ(deleted.markers[0].id, m.id);
+  pose.valid = false;
+  EXPECT_EQ(capsule_markers({}, snapshot, "base", 1e-9, {plane}).markers[0].action, Marker::DELETE);
+}
 struct Snapshot {std::vector<uint64_t> values;};
 TEST(CollisionSnapshots, SlowConsumerNeverHoldsProducerSlot)
 {

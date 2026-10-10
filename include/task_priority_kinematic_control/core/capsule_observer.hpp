@@ -9,9 +9,11 @@ namespace task_priority_kinematic_control
 {
 visualization_msgs::msg::MarkerArray capsule_markers(
   const std::vector<ManualCapsule> & definitions, const CollisionSnapshot & snapshot,
-  const std::string & frame, double length_epsilon);
+  const std::string & frame, double length_epsilon,
+  const std::vector<ManualPlane> & planes = {});
 visualization_msgs::msg::MarkerArray delete_capsule_markers(
-  const std::vector<ManualCapsule> & definitions, const std::string & frame);
+  const std::vector<ManualCapsule> & definitions, const std::string & frame,
+  const std::vector<ManualPlane> & planes = {});
 
 // One dedicated non-control executor/timer for all collision tasks in a host.
 class CapsuleObserver

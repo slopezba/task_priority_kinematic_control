@@ -77,6 +77,19 @@ task_priority_controller:
       - "alpha_right_proximal,alpha_right_distal"
       - "alpha_left_proximal,alpha_left_distal"
 
+    # Finite body barrier in the selected reference frame; repel towards local +X.
+    # Proximal capsules intersect this mounting plane and are intentionally excluded.
+    tasks.self_collision_avoidance.plane_names: [body_guard]
+    tasks.self_collision_avoidance.planes.body_guard.reference_frame: cirtesub/base_link
+    tasks.self_collision_avoidance.planes.body_guard.normal_axis: x
+    tasks.self_collision_avoidance.planes.body_guard.position: 0.335
+    tasks.self_collision_avoidance.planes.body_guard.allowed_side: positive
+    tasks.self_collision_avoidance.planes.body_guard.bounds_min: [-0.265, -0.141]
+    tasks.self_collision_avoidance.planes.body_guard.bounds_max: [0.265, 0.459]
+    tasks.self_collision_avoidance.planes.body_guard.checked_capsules:
+      - alpha_right_distal
+      - alpha_left_distal
+
     tasks.left_pose.plugin: task_priority_kinematic_control/EndEffectorPoseTask
     tasks.left_pose.enabled: true
     tasks.left_pose.priority: 1.0
