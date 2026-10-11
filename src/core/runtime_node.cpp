@@ -162,6 +162,9 @@ void RuntimeNode::declare_parameters()
     if (this->get_parameter(prefix + "plugin").as_string() ==
       "task_priority_kinematic_control/SelfCollisionAvoidanceTask") {
       declare_collision_parameters(get_node_parameters_interface(), prefix);
+    } else if (this->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/JointLimitsTask") {
+      declare_joint_limits_marker_parameters(get_node_parameters_interface(), prefix);
     }
     declare_if_missing<std::string>(*this, prefix + "frame_id", "");
     declare_if_missing<std::vector<double>>(*this, prefix + "gain", {});
@@ -697,6 +700,8 @@ rcl_interfaces::msg::SetParametersResult RuntimeNode::on_parameters_set(
   result.reason = "accepted";
   const auto collision_validation = validate_collision_parameter_updates(parameters, task_manager_->tasks(), false);
   if (!collision_validation.successful) {return collision_validation;}
+  const auto limits_validation = validate_joint_limits_marker_parameter_updates(parameters, task_manager_->tasks(), false);
+  if (!limits_validation.successful) {return limits_validation;}
 
   for (const auto & parameter : parameters) {
     if (parameter.get_name() == "dls_lambda") {
@@ -774,6 +779,7 @@ rcl_interfaces::msg::SetParametersResult RuntimeNode::on_parameters_set(
   }
 
   validate_collision_parameter_updates(parameters, task_manager_->tasks(), true);
+  validate_joint_limits_marker_parameter_updates(parameters, task_manager_->tasks(), true);
   return result;
 }
 

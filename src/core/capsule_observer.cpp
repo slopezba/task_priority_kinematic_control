@@ -98,6 +98,41 @@ visualization_msgs::msg::MarkerArray delete_capsule_markers(
   return capsule_markers(definitions, snapshot, frame, 1e-9, planes);
 }
 
+visualization_msgs::msg::MarkerArray joint_limits_markers(
+  const std::vector<std::string> & joint_names, const JointLimitsSnapshot & snapshot,
+  const std::string & frame, const std::string & task_id)
+{
+  visualization_msgs::msg::MarkerArray array;
+  array.markers.reserve(joint_names.size());
+  for (size_t i = 0; i < joint_names.size(); ++i) {
+    Marker m;
+    m.header.frame_id = frame;
+    m.header.stamp = static_cast<builtin_interfaces::msg::Time>(rclcpp::Time(snapshot.timestamp_ns));
+    m.ns = task_id + "/limits/" + joint_names[i];
+    m.id = static_cast<int>(i); m.type = Marker::CYLINDER; m.action = Marker::DELETE;
+    m.pose.orientation.w = 1.0;
+    m.scale.x = m.scale.y = 0.06; m.scale.z = 0.07;
+    m.color.r = m.color.b = m.color.a = 1.0f;
+    if (snapshot.enabled && snapshot.visualization_enabled && i < snapshot.joints.size() &&
+      snapshot.joints[i].active && snapshot.joints[i].valid) {
+      m.action = Marker::ADD;
+      position(m, snapshot.joints[i].position);
+      const Eigen::Quaterniond orientation = Eigen::Quaterniond::FromTwoVectors(
+        Eigen::Vector3d::UnitZ(), snapshot.joints[i].axis);
+      m.pose.orientation.x = orientation.x(); m.pose.orientation.y = orientation.y();
+      m.pose.orientation.z = orientation.z(); m.pose.orientation.w = orientation.w();
+    }
+    array.markers.push_back(std::move(m));
+  }
+  return array;
+}
+
+visualization_msgs::msg::MarkerArray delete_joint_limits_markers(
+  const std::vector<std::string> & joint_names, const std::string & frame, const std::string & task_id)
+{
+  return joint_limits_markers(joint_names, JointLimitsSnapshot{}, frame, task_id);
+}
+
 CapsuleObserver::CapsuleObserver(const std::vector<std::shared_ptr<TaskBase>> & tasks,
   const std::string & host_name, const rclcpp::Context::SharedPtr & context)
 {
@@ -109,15 +144,25 @@ CapsuleObserver::CapsuleObserver(const std::vector<std::shared_ptr<TaskBase>> & 
   double rate = 1.0;  // Diagnostics run even with visualization disabled.
   for (const auto & task : tasks) {
     auto collision = std::dynamic_pointer_cast<SelfCollisionAvoidanceTask>(task);
-    if (!collision) {continue;}
-    Entry entry;
-    entry.task = collision;
-    entry.publisher = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-      host_name + "/" + task->id() + "/capsules", rclcpp::QoS(1).reliable().durability_volatile());
-    rate = std::max(rate, collision->capsule_publish_rate());
-    entries_.push_back(std::move(entry));
+    if (collision) {
+      Entry entry;
+      entry.task = collision;
+      entry.publisher = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+        host_name + "/" + task->id() + "/capsules", rclcpp::QoS(1).reliable().durability_volatile());
+      rate = std::max(rate, collision->capsule_publish_rate());
+      entries_.push_back(std::move(entry));
+    }
+    auto limits = std::dynamic_pointer_cast<JointLimitsTask>(task);
+    if (limits) {
+      LimitsEntry entry;
+      entry.task = limits;
+      entry.publisher = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+        host_name + "/" + task->id() + "/limits_markers", rclcpp::QoS(1).reliable().durability_volatile());
+      rate = std::max(rate, limits->limits_marker_publish_rate());
+      limits_entries_.push_back(std::move(entry));
+    }
   }
-  if (entries_.empty()) {return;}
+  if (entries_.empty() && limits_entries_.empty()) {return;}
   rclcpp::ExecutorOptions executor_options;
   executor_options.context = context;
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>(executor_options);
@@ -140,6 +185,14 @@ CapsuleObserver::~CapsuleObserver()
     if (entry.visible && rclcpp::ok(node_->get_node_base_interface()->get_context())) {
       try {entry.publisher->publish(delete_capsule_markers(entry.task->capsules(), entry.task->base_frame(), entry.task->planes()));}
       catch (const std::exception &) {}
+    }
+  }
+  for (auto & entry : limits_entries_) {
+    if (entry.visible && rclcpp::ok(node_->get_node_base_interface()->get_context())) {
+      try {
+        entry.publisher->publish(delete_joint_limits_markers(
+          entry.task->joint_names(), entry.task->base_frame(), entry.task->id()));
+      } catch (const std::exception &) {}
     }
   }
 }
@@ -175,6 +228,79 @@ void CapsuleObserver::tick()
       entry.task->base_frame(), entry.task->segment_length_epsilon(), entry.task->planes()));
     entry.last_publish = now; entry.visible = true;
   }
+  for (auto & entry : limits_entries_) {
+    if (const auto * next = entry.task->consume_snapshot()) {entry.snapshot = next;}
+    const bool display = entry.task->publish_limits_marker() && entry.snapshot &&
+      entry.snapshot->visualization_state == entry.task->marker_visibility_state() &&
+      entry.snapshot->enabled && entry.snapshot->visualization_enabled &&
+      std::any_of(entry.snapshot->joints.begin(), entry.snapshot->joints.end(),
+        [](const JointLimitPose & joint) {return joint.active && joint.valid;});
+    if (!display) {
+      if (entry.visible) {
+        entry.publisher->publish(delete_joint_limits_markers(
+          entry.task->joint_names(), entry.task->base_frame(), entry.task->id()));
+        entry.visible = false;
+      }
+      continue;
+    }
+    if (now - entry.last_publish < std::chrono::duration<double>(1.0 / entry.task->limits_marker_publish_rate())) {
+      continue;
+    }
+    entry.publisher->publish(joint_limits_markers(
+      entry.task->joint_names(), *entry.snapshot, entry.task->base_frame(), entry.task->id()));
+    entry.last_publish = now; entry.visible = true;
+  }
+}
+
+void declare_joint_limits_marker_parameters(
+  const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & parameters,
+  const std::string & prefix)
+{
+  if (!parameters->has_parameter(prefix + "publish_limits_marker")) {
+    parameters->declare_parameter(prefix + "publish_limits_marker", rclcpp::ParameterValue(false),
+      rcl_interfaces::msg::ParameterDescriptor{});
+  }
+  if (!parameters->has_parameter(prefix + "limits_marker_publish_rate")) {
+    parameters->declare_parameter(prefix + "limits_marker_publish_rate", rclcpp::ParameterValue(1.0),
+      rcl_interfaces::msg::ParameterDescriptor{});
+  }
+}
+
+rcl_interfaces::msg::SetParametersResult validate_joint_limits_marker_parameter_updates(
+  const std::vector<rclcpp::Parameter> & parameters,
+  const std::vector<std::shared_ptr<TaskBase>> & tasks, bool apply_visualization)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+  for (const auto & task : tasks) {
+    const auto limits = std::dynamic_pointer_cast<JointLimitsTask>(task);
+    if (!limits) {continue;}
+    const std::string prefix = "tasks." + task->id() + ".";
+    for (const auto & parameter : parameters) {
+      if (parameter.get_name() == prefix + "publish_limits_marker" &&
+        parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+        result.successful = false; result.reason = "publish_limits_marker requires bool"; return result;
+      }
+      if (parameter.get_name() == prefix + "limits_marker_publish_rate") {
+        result.successful = false;
+        result.reason = parameter.get_name() + " requires reloading the controller";
+        return result;
+      }
+    }
+  }
+  // Apply only after every visualization parameter in this transaction has been validated.
+  if (apply_visualization) {
+    for (const auto & task : tasks) {
+      const auto limits = std::dynamic_pointer_cast<JointLimitsTask>(task);
+      if (!limits) {continue;}
+      for (const auto & parameter : parameters) {
+        if (parameter.get_name() == "tasks." + task->id() + ".publish_limits_marker") {
+          limits->set_publish_limits_marker(parameter.as_bool());
+        }
+      }
+    }
+  }
+  return result;
 }
 
 void declare_collision_parameters(

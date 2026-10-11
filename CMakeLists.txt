@@ -178,7 +178,7 @@ ament_export_dependencies(
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
-  foreach(collision_test IN ITEMS capsule_geometry plane_geometry self_collision_avoidance_task capsule_visualization)
+  foreach(collision_test IN ITEMS capsule_geometry plane_geometry self_collision_avoidance_task capsule_visualization joint_limits_markers)
     ament_add_gtest(test_${collision_test} test/test_${collision_test}.cpp)
     if(TARGET test_${collision_test})
       target_link_libraries(test_${collision_test} ${core_target})

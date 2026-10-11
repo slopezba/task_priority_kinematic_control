@@ -329,6 +329,9 @@ void TaskPriorityController::declare_task_parameters()
     if (get_node()->get_parameter(prefix + "plugin").as_string() ==
       "task_priority_kinematic_control/SelfCollisionAvoidanceTask") {
       declare_collision_parameters(get_node()->get_node_parameters_interface(), prefix);
+    } else if (get_node()->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/JointLimitsTask") {
+      declare_joint_limits_marker_parameters(get_node()->get_node_parameters_interface(), prefix);
     }
     auto_declare_if_missing(this, prefix + "joint_names", std::vector<std::string>{});
     auto_declare_if_missing(this, prefix + "target", std::vector<double>{});
@@ -774,6 +777,8 @@ rcl_interfaces::msg::SetParametersResult TaskPriorityController::on_parameters_s
   std::scoped_lock lock(task_mutex_);
   const auto collision_validation = validate_collision_parameter_updates(parameters, task_manager_->tasks(), false);
   if (!collision_validation.successful) {return collision_validation;}
+  const auto limits_validation = validate_joint_limits_marker_parameter_updates(parameters, task_manager_->tasks(), false);
+  if (!limits_validation.successful) {return limits_validation;}
   for (const auto & parameter : parameters) {
     if (parameter.get_name() == "dls_lambda") {
       if (parameter.as_double() <= 0.0) {
@@ -852,6 +857,7 @@ rcl_interfaces::msg::SetParametersResult TaskPriorityController::on_parameters_s
   }
 
   validate_collision_parameter_updates(parameters, task_manager_->tasks(), true);
+  validate_joint_limits_marker_parameter_updates(parameters, task_manager_->tasks(), true);
   return result;
 }
 

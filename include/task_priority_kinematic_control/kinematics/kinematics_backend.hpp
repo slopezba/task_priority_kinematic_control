@@ -44,6 +44,13 @@ public:
     return false;
   }
 
+  // Configuration-time lookup; the child link origin locates the joint marker.
+  virtual bool joint_child_frame(const std::string &, std::string & frame_out) const
+  {
+    frame_out.clear();
+    return false;
+  }
+
   virtual std::shared_ptr<KinematicsBackend> clone() const
   {
     return nullptr;

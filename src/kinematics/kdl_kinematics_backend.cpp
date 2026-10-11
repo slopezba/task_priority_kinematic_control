@@ -88,8 +88,13 @@ void KDLKinematicsBackend::configure(
   collision_capsules_.clear();
 
   chains_.clear();
+  joint_child_frames_.clear();
   for (const auto & entry : tree_.getSegments()) {
     const std::string & frame_id = entry.first;
+    const auto & joint = GetTreeElementSegment(entry.second).getJoint();
+    if (joint.getType() != KDL::Joint::None) {
+      joint_child_frames_.emplace(joint.getName(), frame_id);
+    }
     if (frame_id == model_.base_frame()) {
       continue;
     }
@@ -165,6 +170,15 @@ bool KDLKinematicsBackend::frame_joint_dependencies(
     const int index = model_.joint_index(joint);
     if (index >= 0) {joint_indices.push_back(static_cast<size_t>(index));}
   }
+  return true;
+}
+
+bool KDLKinematicsBackend::joint_child_frame(
+  const std::string & joint_name, std::string & frame_out) const
+{
+  const auto it = joint_child_frames_.find(joint_name);
+  if (it == joint_child_frames_.end()) {frame_out.clear(); return false;}
+  frame_out = it->second;
   return true;
 }
 

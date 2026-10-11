@@ -167,6 +167,8 @@ task_priority_runtime:
 
     tasks.joint_limits.plugin: task_priority_kinematic_control/JointLimitsTask
     tasks.joint_limits.enabled: true
+    tasks.joint_limits.publish_limits_marker: false
+    tasks.joint_limits.limits_marker_publish_rate: 1.0
     tasks.joint_limits.priority: 3.0
     tasks.joint_limits.group: global
     tasks.joint_limits.alpha: 0.1

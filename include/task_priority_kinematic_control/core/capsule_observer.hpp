@@ -1,5 +1,6 @@
 #pragma once
 #include "task_priority_kinematic_control/tasks/self_collision_avoidance_task.hpp"
+#include "task_priority_kinematic_control/tasks/joint_limits_task.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -15,7 +16,13 @@ visualization_msgs::msg::MarkerArray delete_capsule_markers(
   const std::vector<ManualCapsule> & definitions, const std::string & frame,
   const std::vector<ManualPlane> & planes = {});
 
-// One dedicated non-control executor/timer for all collision tasks in a host.
+visualization_msgs::msg::MarkerArray joint_limits_markers(
+  const std::vector<std::string> & joint_names, const JointLimitsSnapshot & snapshot,
+  const std::string & frame, const std::string & task_id);
+visualization_msgs::msg::MarkerArray delete_joint_limits_markers(
+  const std::vector<std::string> & joint_names, const std::string & frame, const std::string & task_id);
+
+// One dedicated non-control executor/timer for collision and joint-limit tasks in a host.
 class CapsuleObserver
 {
 public:
@@ -35,8 +42,17 @@ private:
     std::chrono::steady_clock::time_point last_publish{};
     std::chrono::steady_clock::time_point last_warning{};
   };
+  struct LimitsEntry
+  {
+    std::shared_ptr<JointLimitsTask> task;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr publisher;
+    const JointLimitsSnapshot * snapshot = nullptr;
+    bool visible = false;
+    std::chrono::steady_clock::time_point last_publish{};
+  };
   void tick();
   std::vector<Entry> entries_;
+  std::vector<LimitsEntry> limits_entries_;
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   rclcpp::TimerBase::SharedPtr timer_;
@@ -47,9 +63,16 @@ private:
 void declare_collision_parameters(
   const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & parameters,
   const std::string & prefix);
+void declare_joint_limits_marker_parameters(
+  const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & parameters,
+  const std::string & prefix);
 // Rejects topology changes and applies visualization toggles atomically. The observer
 // never takes the host task mutex; parameter callbacks retain their existing serialization.
 rcl_interfaces::msg::SetParametersResult validate_collision_parameter_updates(
+  const std::vector<rclcpp::Parameter> & parameters,
+  const std::vector<std::shared_ptr<TaskBase>> & tasks,
+  bool apply_visualization = true);
+rcl_interfaces::msg::SetParametersResult validate_joint_limits_marker_parameter_updates(
   const std::vector<rclcpp::Parameter> & parameters,
   const std::vector<std::shared_ptr<TaskBase>> & tasks,
   bool apply_visualization = true);

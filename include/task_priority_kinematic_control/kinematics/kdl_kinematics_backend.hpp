@@ -28,6 +28,8 @@ public:
   bool frame_joint_dependencies(
     const std::string & frame, std::vector<size_t> & joint_indices) const override;
 
+  bool joint_child_frame(const std::string & joint_name, std::string & frame_out) const override;
+
   std::shared_ptr<KinematicsBackend> clone() const override;
 
   FrameState compute_frame_state(
@@ -65,6 +67,7 @@ private:
   WholeBodyState last_state_;
   KDL::Tree tree_;
   std::unordered_map<std::string, ChainData> chains_;
+  std::unordered_map<std::string, std::string> joint_child_frames_;
   std::unordered_map<std::string, FrameState> cached_frames_;
   std::vector<CollisionCapsule> collision_capsules_;
 };

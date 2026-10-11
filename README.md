@@ -403,6 +403,10 @@ La configuración incluida carga esta jerarquía:
 | `4` | `right_arm_nominal` | `JointNominalTask` | `right` | Postura nominal del brazo derecho. |
 | `5` | `base_yaw` | `BaseYawTask` | `base` | Mantiene yaw de base. |
 
+La tarea `joint_limits` utiliza buffers preasignados y puede mostrar cilindros magenta sobre las
+articulaciones con límites activos. Los parámetros y el comportamiento se describen en
+[docs/joint_limits.md](docs/joint_limits.md).
+
 ## Topics de entrada
 
 ### Estado de navegación

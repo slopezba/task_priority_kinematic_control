@@ -275,7 +275,7 @@ compatibility adapter. KDL's additive `read_frame_state` copies into pre-sized b
 The control producer and visualization consumer each own one snapshot slot, exchanging the
 third with a lock-free atomic index. A slow consumer cannot retain a producer-owned slot;
 old snapshots can be dropped. **One dedicated executor/thread and timer per host handles
-all collision tasks**, outside the control executor. DDS publication, marker construction,
+all collision and joint-limit marker tasks**, outside the control executor. DDS publication, marker construction,
 logging and deletion happen only there or during non-control cleanup. There is no visualization
 mutex shared with the control producer, no TF wait, file access, parameter parsing or pair
 rebuilding in the capsule update. Even without RViz, the observer consumes diagnostics.
