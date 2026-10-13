@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace task_priority_kinematic_control
@@ -38,6 +39,10 @@ void JointTrajectoryTask::configure(
     get_double_array_param(parameters, "goal_tolerance", std::vector<double>(joint_names_.size(), 0.05));
   trajectory_timeout_ = get_double_param(parameters, "trajectory_timeout", 0.5);
   hold_last_point_ = get_bool_param(parameters, "hold_last_point", true);
+  interpolation_method_ = get_string_param(parameters, "interpolation_method", "linear");
+  if (interpolation_method_ != "linear" && interpolation_method_ != "quintic") {
+    throw std::invalid_argument("Joint trajectory interpolation_method must be linear or quintic");
+  }
 
   gains_ = Eigen::VectorXd::Constant(joint_names_.size(), 1.0);
   goal_tolerance_ = Eigen::VectorXd::Constant(joint_names_.size(), 0.05);
@@ -77,8 +82,9 @@ TaskComputation JointTrajectoryTask::update(
   const auto elapsed_duration = SteadyClock::now() - start_time_;
   const double elapsed = std::chrono::duration<double>(elapsed_duration).count();
   const double duration = trajectory_duration_locked();
-  if (elapsed > duration + trajectory_timeout_) {
+  if (!(succeeded_ && hold_last_point_) && elapsed > duration + trajectory_timeout_) {
     trajectory_active_ = false;
+    computation.active = false;
     timed_out_ = true;
     succeeded_ = false;
     status_message_ = "trajectory_timeout";
@@ -133,12 +139,16 @@ bool JointTrajectoryTask::set_joint_trajectory(
   const trajectory_msgs::msg::JointTrajectory & trajectory,
   std::string & message)
 {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!enabled_) {
+    message = "Joint trajectory task is disabled";
+    return false;
+  }
   std::vector<Sample> samples;
   if (!validate_and_map_trajectory(trajectory, samples, message)) {
     return false;
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
   samples_ = std::move(samples);
   start_time_ = SteadyClock::now();
   current_target_ = samples_.front().position;
@@ -156,16 +166,39 @@ bool JointTrajectoryTask::set_joint_trajectory(
 bool JointTrajectoryTask::cancel_joint_trajectory(std::string & message)
 {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!trajectory_active_ && !succeeded_) {
+  if (samples_.empty() && !trajectory_active_ && !succeeded_) {
     message = "No active joint trajectory";
     return false;
   }
-  trajectory_active_ = false;
-  canceled_ = true;
-  succeeded_ = false;
-  status_message_ = "canceled";
+  clear_trajectory_locked("canceled", true);
   message = "Joint trajectory canceled";
   return true;
+}
+
+void JointTrajectoryTask::clear_trajectory_locked(const std::string & status, bool canceled)
+{
+  samples_.clear();
+  trajectory_active_ = false;
+  succeeded_ = false;
+  canceled_ = canceled;
+  timed_out_ = false;
+  status_message_ = status;
+}
+
+bool JointTrajectoryTask::set_enabled(bool enabled)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!enabled) {
+    clear_trajectory_locked("disabled", trajectory_active_ || succeeded_ || canceled_);
+  }
+  enabled_ = enabled;
+  return true;
+}
+
+bool JointTrajectoryTask::enabled() const
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  return enabled_;
 }
 
 JointTrajectoryTaskStatus JointTrajectoryTask::joint_trajectory_status() const
@@ -204,17 +237,13 @@ bool JointTrajectoryTask::set_gain(const std::vector<double> & gain, std::string
 void JointTrajectoryTask::reset()
 {
   std::lock_guard<std::mutex> lock(mutex_);
-  trajectory_active_ = false;
-  succeeded_ = false;
-  canceled_ = false;
-  timed_out_ = false;
-  status_message_ = "idle";
+  clear_trajectory_locked(enabled_ ? "idle" : "disabled", trajectory_active_ || canceled_);
 }
 
 msg::TaskStatus JointTrajectoryTask::build_status() const
 {
-  auto status = TaskBaseCommon::build_status();
   std::lock_guard<std::mutex> lock(mutex_);
+  auto status = TaskBaseCommon::build_status();
   status.active = enabled_ && trajectory_active_;
   status.status_message = status_message_;
   status.target_type = "joint_trajectory";
@@ -248,7 +277,10 @@ bool JointTrajectoryTask::validate_and_map_trajectory(
 
   std::unordered_map<std::string, size_t> incoming_index;
   for (size_t i = 0; i < trajectory.joint_names.size(); ++i) {
-    incoming_index[trajectory.joint_names[i]] = i;
+    if (!incoming_index.emplace(trajectory.joint_names[i], i).second) {
+      message = "Joint trajectory contains duplicate joint names";
+      return false;
+    }
   }
   std::vector<size_t> order;
   order.reserve(joint_names_.size());
@@ -273,8 +305,19 @@ bool JointTrajectoryTask::validate_and_map_trajectory(
       message = "Joint trajectory point velocities size does not match joint_names size";
       return false;
     }
+    if (interpolation_method_ == "quintic" &&
+      (point.velocities.size() != joint_names_.size() ||
+      point.accelerations.size() != joint_names_.size()))
+    {
+      message = "Quintic interpolation requires positions, velocities and accelerations at every point";
+      return false;
+    }
     if (!finite_vector(point.positions) || (!point.velocities.empty() && !finite_vector(point.velocities))) {
       message = "Joint trajectory contains non-finite values";
+      return false;
+    }
+    if (interpolation_method_ == "quintic" && !finite_vector(point.accelerations)) {
+      message = "Joint trajectory contains non-finite accelerations";
       return false;
     }
 
@@ -288,12 +331,16 @@ bool JointTrajectoryTask::validate_and_map_trajectory(
     Sample sample;
     sample.position = Eigen::VectorXd::Zero(joint_names_.size());
     sample.velocity = Eigen::VectorXd::Zero(joint_names_.size());
+    sample.acceleration = Eigen::VectorXd::Zero(joint_names_.size());
     sample.has_velocity = !point.velocities.empty();
     sample.time_from_start = time_from_start;
     for (size_t i = 0; i < order.size(); ++i) {
       sample.position(static_cast<Eigen::Index>(i)) = point.positions[order[i]];
       if (sample.has_velocity) {
         sample.velocity(static_cast<Eigen::Index>(i)) = point.velocities[order[i]];
+      }
+      if (interpolation_method_ == "quintic") {
+        sample.acceleration(static_cast<Eigen::Index>(i)) = point.accelerations[order[i]];
       }
     }
     samples.push_back(sample);
@@ -323,6 +370,28 @@ JointTrajectoryTask::Sample JointTrajectoryTask::sample_at_locked(double elapsed
     const double alpha = span > 0.0 ? (elapsed - prev.time_from_start) / span : 1.0;
 
     Sample sample;
+    sample.acceleration = Eigen::VectorXd::Zero(joint_names_.size());
+    if (interpolation_method_ == "quintic") {
+      // Normalized quintic Hermite polynomial matching q, dq and ddq at both ends.
+      const auto c0 = prev.position;
+      const Eigen::VectorXd c1 = span * prev.velocity;
+      const Eigen::VectorXd c2 = 0.5 * span * span * prev.acceleration;
+      const Eigen::VectorXd delta = next.position - c0 - c1 - c2;
+      const Eigen::VectorXd velocity_delta = span * next.velocity - c1 - 2.0 * c2;
+      const Eigen::VectorXd acceleration_delta =
+        span * span * next.acceleration - 2.0 * c2;
+      const Eigen::VectorXd c3 = 10.0 * delta - 4.0 * velocity_delta + 0.5 * acceleration_delta;
+      const Eigen::VectorXd c4 = -15.0 * delta + 7.0 * velocity_delta - acceleration_delta;
+      const Eigen::VectorXd c5 = 6.0 * delta - 3.0 * velocity_delta + 0.5 * acceleration_delta;
+      sample.position = c0 + alpha * (c1 + alpha * (c2 + alpha * (c3 + alpha * (c4 + alpha * c5))));
+      sample.velocity =
+        (c1 + alpha * (2.0 * c2 + alpha * (3.0 * c3 + alpha * (4.0 * c4 + alpha * 5.0 * c5)))) / span;
+      sample.acceleration =
+        (2.0 * c2 + alpha * (6.0 * c3 + alpha * (12.0 * c4 + alpha * 20.0 * c5))) / (span * span);
+      sample.has_velocity = true;
+      sample.time_from_start = elapsed;
+      return sample;
+    }
     sample.position = prev.position + alpha * (next.position - prev.position);
     if (prev.has_velocity && next.has_velocity) {
       sample.velocity = prev.velocity + alpha * (next.velocity - prev.velocity);

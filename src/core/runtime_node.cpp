@@ -3,6 +3,7 @@
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <stdexcept>
 #include <thread>
 
@@ -184,6 +185,7 @@ void RuntimeNode::declare_parameters()
     declare_if_missing<std::vector<double>>(*this, prefix + "goal_tolerance", {});
     declare_if_missing<double>(*this, prefix + "trajectory_timeout", 0.5);
     declare_if_missing<bool>(*this, prefix + "hold_last_point", true);
+    declare_if_missing<std::string>(*this, prefix + "interpolation_method", "linear");
     declare_if_missing<double>(*this, prefix + "relative_pose_tolerance", 1.0e-4);
     declare_if_missing<double>(*this, prefix + "planning_timeout", 5.0);
     declare_if_missing<double>(*this, prefix + "move_gain", 0.8);
@@ -398,6 +400,13 @@ void RuntimeNode::configure_subscribers()
             }
 
             std::string message;
+            std::scoped_lock lock(trajectory_action_mutex_);
+            if (!trajectory_task_enabled(task_id) || trajectory_action_slots_.count(task_id)) {
+              RCLCPP_WARN(this->get_logger(),
+                "Rejected trajectory topic for task '%s': disabled or owned by an action",
+                task_id.c_str());
+              return;
+            }
             if (!task_manager_->set_task_joint_trajectory(task_id, *msg, message)) {
               RCLCPP_WARN(
                 this->get_logger(),
@@ -411,16 +420,26 @@ void RuntimeNode::configure_subscribers()
           rclcpp_action::create_server<control_msgs::action::FollowJointTrajectory>(
           this,
           "task_priority/tasks/" + task_id + "/follow_joint_trajectory",
-          [](const rclcpp_action::GoalUUID &,
+          [this, task_id](const rclcpp_action::GoalUUID & uuid,
           std::shared_ptr<const control_msgs::action::FollowJointTrajectory::Goal>)
           {
+            std::scoped_lock lock(trajectory_action_mutex_);
+            if (!trajectory_task_enabled(task_id) || trajectory_action_slots_.count(task_id)) {
+              return rclcpp_action::GoalResponse::REJECT;
+            }
+            trajectory_action_slots_.emplace(task_id, TrajectoryActionSlot{uuid, nullptr});
             return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
           },
           [this, task_id](
             const std::shared_ptr<rclcpp_action::ServerGoalHandle<
-              control_msgs::action::FollowJointTrajectory>>)
+              control_msgs::action::FollowJointTrajectory>> handle)
           {
             std::string message;
+            std::scoped_lock lock(trajectory_action_mutex_);
+            const auto slot = trajectory_action_slots_.find(task_id);
+            if (slot == trajectory_action_slots_.end() || slot->second.uuid != handle->get_goal_id()) {
+              return rclcpp_action::CancelResponse::REJECT;
+            }
             task_manager_->cancel_task_joint_trajectory(task_id, message);
             return rclcpp_action::CancelResponse::ACCEPT;
           },
@@ -428,8 +447,7 @@ void RuntimeNode::configure_subscribers()
             const std::shared_ptr<rclcpp_action::ServerGoalHandle<
               control_msgs::action::FollowJointTrajectory>> goal_handle)
           {
-            std::thread(&RuntimeNode::execute_task_trajectory_goal, this, task_id, goal_handle)
-            .detach();
+            execute_task_trajectory_goal(task_id, goal_handle);
           });
       }
       continue;
@@ -454,6 +472,8 @@ void RuntimeNode::configure_subscribers()
         }
       });
   }
+  trajectory_result_timer_ = create_wall_timer(
+    std::chrono::milliseconds(20), [this]() {poll_task_trajectory_goals();});
 }
 
 void RuntimeNode::configure_services()
@@ -536,58 +556,88 @@ void RuntimeNode::configure_services()
   });
 }
 
+bool RuntimeNode::trajectory_task_enabled(const std::string & task_id) const
+{
+  for (const auto & task : task_manager_->tasks()) {
+    if (task->id() == task_id) {return task->enabled();}
+  }
+  return false;
+}
+
 void RuntimeNode::execute_task_trajectory_goal(
   const std::string & task_id,
-  const std::shared_ptr<rclcpp_action::ServerGoalHandle<
-    control_msgs::action::FollowJointTrajectory>> goal_handle)
+  const std::shared_ptr<TrajectoryGoalHandle> goal_handle)
 {
   using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
-
+  std::string error;
+  {
+    std::scoped_lock lock(trajectory_action_mutex_);
+    const auto slot = trajectory_action_slots_.find(task_id);
+    if (slot == trajectory_action_slots_.end() || slot->second.uuid != goal_handle->get_goal_id()) {
+      error = "Trajectory admission expired";
+    } else if (goal_handle->is_canceling()) {
+      error = "Joint trajectory canceled before installation";
+      trajectory_action_slots_.erase(slot);
+    } else if (!trajectory_task_enabled(task_id)) {
+      error = "Joint trajectory task is disabled";
+      trajectory_action_slots_.erase(slot);
+    } else if (!task_manager_->set_task_joint_trajectory(
+        task_id, goal_handle->get_goal()->trajectory, error))
+    {
+      trajectory_action_slots_.erase(slot);
+    } else {
+      slot->second.handle = goal_handle;
+      return;
+    }
+  }
   auto result = std::make_shared<FollowJointTrajectory::Result>();
-  std::string message;
-  if (!task_manager_->set_task_joint_trajectory(task_id, goal_handle->get_goal()->trajectory, message)) {
-    result->error_code = FollowJointTrajectory::Result::INVALID_GOAL;
-    result->error_string = message;
-    goal_handle->abort(result);
-    return;
-  }
-
-  rclcpp::Rate rate(50.0);
-  while (rclcpp::ok()) {
-    if (goal_handle->is_canceling()) {
-      task_manager_->cancel_task_joint_trajectory(task_id, message);
-      result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
-      result->error_string = "Joint trajectory task canceled";
-      goal_handle->canceled(result);
-      return;
-    }
-
-    const auto status = task_manager_->get_task_joint_trajectory_status(task_id);
-    if (status.succeeded) {
-      result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
-      result->error_string = status.message;
-      goal_handle->succeed(result);
-      return;
-    }
-    if (status.canceled) {
-      result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
-      result->error_string = status.message;
-      goal_handle->canceled(result);
-      return;
-    }
-    if (status.timed_out) {
-      result->error_code = FollowJointTrajectory::Result::GOAL_TOLERANCE_VIOLATED;
-      result->error_string = status.message;
-      goal_handle->abort(result);
-      return;
-    }
-
-    rate.sleep();
-  }
-
   result->error_code = FollowJointTrajectory::Result::INVALID_GOAL;
-  result->error_string = "ROS shutdown during joint trajectory task execution";
-  goal_handle->abort(result);
+  result->error_string = error;
+  if (goal_handle->is_canceling()) {goal_handle->canceled(result);}
+  else {goal_handle->abort(result);}
+}
+
+void RuntimeNode::poll_task_trajectory_goals()
+{
+  using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
+  std::vector<std::function<void()>> completions;
+  {
+    std::scoped_lock lock(trajectory_action_mutex_);
+    for (auto slot = trajectory_action_slots_.begin(); slot != trajectory_action_slots_.end();) {
+      const auto handle = slot->second.handle;
+      if (!handle) {++slot; continue;}
+      const auto & task_id = slot->first;
+      auto result = std::make_shared<FollowJointTrajectory::Result>();
+      const bool canceling = handle->is_canceling();
+      const bool ready = trajectory_task_enabled(task_id);
+      const auto status = task_manager_->get_task_joint_trajectory_status(task_id);
+      if (canceling || !ready) {
+        std::string message;
+        task_manager_->cancel_task_joint_trajectory(task_id, message);
+        result->error_code = canceling ? FollowJointTrajectory::Result::SUCCESSFUL :
+          FollowJointTrajectory::Result::INVALID_GOAL;
+        result->error_string = canceling ? "Joint trajectory task canceled" :
+          "Joint trajectory task is disabled";
+      } else if (status.succeeded) {
+        result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
+        result->error_string = status.message;
+      } else if (status.canceled || !status.accepted) {
+        result->error_code = FollowJointTrajectory::Result::INVALID_GOAL;
+        result->error_string = "Joint trajectory was cleared or disabled";
+      } else if (status.timed_out) {
+        result->error_code = FollowJointTrajectory::Result::GOAL_TOLERANCE_VIOLATED;
+        result->error_string = status.message;
+      } else {++slot; continue;}
+      const bool succeeded = ready && !canceling && status.succeeded;
+      completions.emplace_back([handle, result, canceling, succeeded]() {
+        if (canceling) {handle->canceled(result);}
+        else if (succeeded) {handle->succeed(result);}
+        else {handle->abort(result);}
+      });
+      slot = trajectory_action_slots_.erase(slot);
+    }
+  }
+  for (const auto & complete : completions) {complete();}
 }
 
 void RuntimeNode::configure_timer()

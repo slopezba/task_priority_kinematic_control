@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "pluginlib/class_list_macros.hpp"
+#include "lifecycle_msgs/msg/state.hpp"
 
 namespace task_priority_kinematic_control
 {
@@ -340,6 +341,7 @@ void TaskPriorityController::declare_task_parameters()
     auto_declare_if_missing(this, prefix + "goal_tolerance", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "trajectory_timeout", 0.5);
     auto_declare_if_missing(this, prefix + "hold_last_point", true);
+    auto_declare_if_missing(this, prefix + "interpolation_method", std::string("linear"));
     auto_declare_if_missing(this, prefix + "relative_pose_tolerance", 1.0e-4);
     auto_declare_if_missing(this, prefix + "planning_timeout", 5.0);
     auto_declare_if_missing(this, prefix + "move_gain", 0.8);
@@ -1018,6 +1020,15 @@ void TaskPriorityController::configure_external_interfaces()
             }
             std::string message;
             std::scoped_lock lock(task_mutex_);
+            if (!trajectory_execution_ready_ ||
+              get_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE ||
+              !trajectory_task_enabled_locked(task_id) || trajectory_action_slots_.count(task_id))
+            {
+              RCLCPP_WARN(get_node()->get_logger(),
+                "Rejected trajectory topic for task '%s': inactive, disabled or owned by an action",
+                task_id.c_str());
+              return;
+            }
             if (!task_manager_->set_task_joint_trajectory(task_id, *msg, message)) {
               RCLCPP_WARN(
                 get_node()->get_logger(),
@@ -1032,25 +1043,33 @@ void TaskPriorityController::configure_external_interfaces()
           rclcpp_action::create_server<FollowJointTrajectory>(
           get_node(),
           action_name,
-          [](const rclcpp_action::GoalUUID &,
+          [this, task_id](const rclcpp_action::GoalUUID & uuid,
           std::shared_ptr<const FollowJointTrajectory::Goal>)
           {
+            std::scoped_lock lock(task_mutex_);
+            if (!trajectory_execution_ready_ ||
+              get_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE ||
+              !trajectory_task_enabled_locked(task_id) || trajectory_action_slots_.count(task_id))
+            {
+              return rclcpp_action::GoalResponse::REJECT;
+            }
+            trajectory_action_slots_.emplace(task_id, TrajectoryActionSlot{uuid, nullptr});
             return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
           },
-          [this, task_id](const std::shared_ptr<FollowJointTrajectoryGoalHandle>)
+          [this, task_id](const std::shared_ptr<FollowJointTrajectoryGoalHandle> handle)
           {
             std::string message;
             std::scoped_lock lock(task_mutex_);
+            const auto slot = trajectory_action_slots_.find(task_id);
+            if (slot == trajectory_action_slots_.end() || slot->second.uuid != handle->get_goal_id()) {
+              return rclcpp_action::CancelResponse::REJECT;
+            }
             task_manager_->cancel_task_joint_trajectory(task_id, message);
             return rclcpp_action::CancelResponse::ACCEPT;
           },
           [this, task_id](const std::shared_ptr<FollowJointTrajectoryGoalHandle> goal_handle)
           {
-            std::thread(
-              &TaskPriorityController::execute_task_trajectory_goal,
-              this,
-              task_id,
-              goal_handle).detach();
+            execute_task_trajectory_goal(task_id, goal_handle);
           });
       }
       continue;
@@ -1077,6 +1096,8 @@ void TaskPriorityController::configure_external_interfaces()
       rclcpp::SystemDefaultsQoS(),
       pose_goal_callback);
   }
+  trajectory_result_timer_ = get_node()->create_wall_timer(
+    std::chrono::milliseconds(20), [this]() {poll_task_trajectory_goals();});
 }
 
 void TaskPriorityController::publish_hierarchy_state(const rclcpp::Time & time)
@@ -1208,12 +1229,17 @@ controller_interface::CallbackReturn TaskPriorityController::on_activate(
   std_msgs::msg::Bool active;
   active.data = true;
   active_pub_->publish(active);
+  {
+    std::scoped_lock lock(task_mutex_);
+    trajectory_execution_ready_ = true;
+  }
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
 controller_interface::CallbackReturn TaskPriorityController::on_deactivate(
   const rclcpp_lifecycle::State &)
 {
+  stop_task_trajectory_goals("Task priority controller deactivated");
   if (active_pub_) {active_pub_->publish(std_msgs::msg::Bool{});}
   reset_commands();
   // Join the publishing thread before the final zero, so a queued command
@@ -1227,6 +1253,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_deactivate(
 controller_interface::CallbackReturn TaskPriorityController::on_cleanup(
   const rclcpp_lifecycle::State &)
 {
+  stop_task_trajectory_goals("Task priority controller cleaned up");
   if (active_pub_) {active_pub_->publish(std_msgs::msg::Bool{});}
   reset_commands();
   // Join the publishing thread before the final zero, so a queued command
@@ -1241,6 +1268,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_cleanup(
 controller_interface::CallbackReturn TaskPriorityController::on_shutdown(
   const rclcpp_lifecycle::State &)
 {
+  stop_task_trajectory_goals("Task priority controller shut down");
   if (active_pub_) {active_pub_->publish(std_msgs::msg::Bool{});}
   reset_commands();
   // Join the publishing thread before the final zero, so a queued command
@@ -1285,64 +1313,119 @@ void TaskPriorityController::publish_zero_controller_output(const rclcpp::Time &
   publish_controller_output(time, command);
 }
 
+bool TaskPriorityController::trajectory_task_enabled_locked(const std::string & task_id) const
+{
+  if (!task_manager_) {return false;}
+  for (const auto & task : task_manager_->tasks()) {
+    if (task->id() == task_id) {return task->enabled();}
+  }
+  return false;
+}
+
 void TaskPriorityController::execute_task_trajectory_goal(
   const std::string & task_id,
   const std::shared_ptr<FollowJointTrajectoryGoalHandle> goal_handle)
 {
-  auto result = std::make_shared<FollowJointTrajectory::Result>();
-  std::string message;
+  std::string error;
   {
     std::scoped_lock lock(task_mutex_);
-    if (!task_manager_->set_task_joint_trajectory(task_id, goal_handle->get_goal()->trajectory, message)) {
-      result->error_code = FollowJointTrajectory::Result::INVALID_GOAL;
-      result->error_string = message;
-      goal_handle->abort(result);
-      return;
-    }
-  }
-
-  rclcpp::Rate rate(50.0);
-  while (rclcpp::ok()) {
-    if (goal_handle->is_canceling()) {
-      std::scoped_lock lock(task_mutex_);
-      task_manager_->cancel_task_joint_trajectory(task_id, message);
-      result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
-      result->error_string = "Joint trajectory task canceled";
-      goal_handle->canceled(result);
-      return;
-    }
-
-    JointTrajectoryTaskStatus status;
+    const auto slot = trajectory_action_slots_.find(task_id);
+    if (slot == trajectory_action_slots_.end() || slot->second.uuid != goal_handle->get_goal_id()) {
+      error = "Trajectory admission expired";
+    } else if (goal_handle->is_canceling()) {
+      error = "Joint trajectory canceled before installation";
+      trajectory_action_slots_.erase(slot);
+    } else if (!trajectory_execution_ready_ ||
+      get_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE ||
+      !trajectory_task_enabled_locked(task_id))
     {
-      std::scoped_lock lock(task_mutex_);
-      status = task_manager_->get_task_joint_trajectory_status(task_id);
-    }
-
-    if (status.succeeded) {
-      result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
-      result->error_string = status.message;
-      goal_handle->succeed(result);
+      error = "Task priority controller is inactive or trajectory task is disabled";
+      trajectory_action_slots_.erase(slot);
+    } else if (!task_manager_->set_task_joint_trajectory(
+        task_id, goal_handle->get_goal()->trajectory, error))
+    {
+      trajectory_action_slots_.erase(slot);
+    } else {
+      // Install before yielding to the executor; no delayed worker can undo a cancellation.
+      slot->second.handle = goal_handle;
       return;
     }
-    if (status.canceled) {
-      result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
-      result->error_string = status.message;
-      goal_handle->canceled(result);
-      return;
-    }
-    if (status.timed_out) {
-      result->error_code = FollowJointTrajectory::Result::GOAL_TOLERANCE_VIOLATED;
-      result->error_string = status.message;
-      goal_handle->abort(result);
-      return;
-    }
-
-    rate.sleep();
   }
-
+  auto result = std::make_shared<FollowJointTrajectory::Result>();
   result->error_code = FollowJointTrajectory::Result::INVALID_GOAL;
-  result->error_string = "ROS shutdown during joint trajectory task execution";
-  goal_handle->abort(result);
+  result->error_string = error;
+  if (goal_handle->is_canceling()) {goal_handle->canceled(result);}
+  else {goal_handle->abort(result);}
+}
+
+void TaskPriorityController::poll_task_trajectory_goals()
+{
+  std::vector<std::function<void()>> completions;
+  {
+    std::scoped_lock lock(task_mutex_);
+    for (auto slot = trajectory_action_slots_.begin(); slot != trajectory_action_slots_.end();) {
+      const auto handle = slot->second.handle;
+      if (!handle) {++slot; continue;}
+      const auto & task_id = slot->first;
+      auto result = std::make_shared<FollowJointTrajectory::Result>();
+      const bool canceling = handle->is_canceling();
+      const bool ready = trajectory_execution_ready_ &&
+        get_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE &&
+        trajectory_task_enabled_locked(task_id);
+      auto status = task_manager_->get_task_joint_trajectory_status(task_id);
+      if (canceling || !ready) {
+        std::string message;
+        task_manager_->cancel_task_joint_trajectory(task_id, message);
+        result->error_code = canceling ? FollowJointTrajectory::Result::SUCCESSFUL :
+          FollowJointTrajectory::Result::INVALID_GOAL;
+        result->error_string = canceling ? "Joint trajectory task canceled" :
+          "Task priority controller is inactive or trajectory task is disabled";
+      } else if (status.succeeded) {
+        result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
+        result->error_string = status.message;
+      } else if (status.canceled || !status.accepted) {
+        result->error_code = FollowJointTrajectory::Result::INVALID_GOAL;
+        result->error_string = "Joint trajectory was cleared or disabled";
+      } else if (status.timed_out) {
+        result->error_code = FollowJointTrajectory::Result::GOAL_TOLERANCE_VIOLATED;
+        result->error_string = status.message;
+      } else {++slot; continue;}
+      const bool succeeded = ready && !canceling && status.succeeded;
+      completions.emplace_back([handle, result, canceling, succeeded]() {
+        if (canceling) {handle->canceled(result);}
+        else if (succeeded) {handle->succeed(result);}
+        else {handle->abort(result);}
+      });
+      slot = trajectory_action_slots_.erase(slot);
+    }
+  }
+  for (const auto & complete : completions) {complete();}
+}
+
+void TaskPriorityController::stop_task_trajectory_goals(const std::string & reason)
+{
+  std::vector<std::shared_ptr<FollowJointTrajectoryGoalHandle>> handles;
+  {
+    std::scoped_lock lock(task_mutex_);
+    trajectory_execution_ready_ = false;
+    if (task_manager_) {
+      for (const auto & task : task_manager_->tasks()) {
+        std::string message;
+        task->cancel_joint_trajectory(message);
+      }
+    }
+    for (const auto & slot : trajectory_action_slots_) {
+      if (slot.second.handle) {handles.push_back(slot.second.handle);}
+    }
+    trajectory_action_slots_.clear();
+  }
+  for (const auto & handle : handles) {
+    auto result = std::make_shared<FollowJointTrajectory::Result>();
+    result->error_code = FollowJointTrajectory::Result::INVALID_GOAL;
+    result->error_string = reason;
+    if (handle->is_canceling()) {handle->canceled(result);}
+    else {handle->abort(result);}
+  }
 }
 
 controller_interface::return_type TaskPriorityController::update(

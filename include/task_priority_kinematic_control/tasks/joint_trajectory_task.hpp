@@ -27,6 +27,8 @@ public:
   bool cancel_joint_trajectory(std::string & message) override;
   JointTrajectoryTaskStatus joint_trajectory_status() const override;
   bool set_gain(const std::vector<double> & gain, std::string & message) override;
+  bool set_enabled(bool enabled) override;
+  bool enabled() const override;
   void reset() override;
   msg::TaskStatus build_status() const override;
   std::vector<double> current_target() const override;
@@ -38,6 +40,7 @@ private:
   {
     Eigen::VectorXd position;
     Eigen::VectorXd velocity;
+    Eigen::VectorXd acceleration;
     bool has_velocity = false;
     double time_from_start = 0.0;
   };
@@ -48,12 +51,16 @@ private:
     std::string & message) const;
   Sample sample_at_locked(double elapsed) const;
   double trajectory_duration_locked() const;
+  void clear_trajectory_locked(const std::string & status, bool canceled);
+
+  friend class JointTrajectoryInterpolationTest;
 
   std::vector<std::string> joint_names_;
   Eigen::VectorXd gains_;
   Eigen::VectorXd goal_tolerance_;
   double trajectory_timeout_{0.5};
   bool hold_last_point_{true};
+  std::string interpolation_method_{"linear"};
 
   mutable std::mutex mutex_;
   std::vector<Sample> samples_;

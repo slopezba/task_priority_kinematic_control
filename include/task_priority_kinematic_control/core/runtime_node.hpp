@@ -29,6 +29,7 @@
 #include <rclcpp/parameter_client.hpp>
 
 #include <map>
+#include <mutex>
 
 namespace task_priority_kinematic_control
 {
@@ -58,6 +59,16 @@ private:
     const std::string & task_id,
     const std::shared_ptr<rclcpp_action::ServerGoalHandle<
       control_msgs::action::FollowJointTrajectory>> goal_handle);
+  void poll_task_trajectory_goals();
+  bool trajectory_task_enabled(const std::string & task_id) const;
+
+  using TrajectoryGoalHandle =
+    rclcpp_action::ServerGoalHandle<control_msgs::action::FollowJointTrajectory>;
+  struct TrajectoryActionSlot
+  {
+    rclcpp_action::GoalUUID uuid;
+    std::shared_ptr<TrajectoryGoalHandle> handle;
+  };
   rcl_interfaces::msg::SetParametersResult on_parameters_set(
     const std::vector<rclcpp::Parameter> & parameters);
 
@@ -97,6 +108,9 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_srv_;
 
   rclcpp::TimerBase::SharedPtr timer_;
+  std::mutex trajectory_action_mutex_;
+  std::map<std::string, TrajectoryActionSlot> trajectory_action_slots_;
+  rclcpp::TimerBase::SharedPtr trajectory_result_timer_;
   OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 };
 

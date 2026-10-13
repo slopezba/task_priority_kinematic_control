@@ -75,6 +75,8 @@ protected:
     const rclcpp::Duration & period) override;
 
 private:
+  friend class TrajectoryActionReadinessTest;
+
   using NavigatorMsg = sura_msgs::msg::Navigator;
   using PoseStamped = geometry_msgs::msg::PoseStamped;
   using Float64MultiArray = std_msgs::msg::Float64MultiArray;
@@ -132,6 +134,15 @@ private:
   void execute_task_trajectory_goal(
     const std::string & task_id,
     const std::shared_ptr<FollowJointTrajectoryGoalHandle> goal_handle);
+  void poll_task_trajectory_goals();
+  void stop_task_trajectory_goals(const std::string & reason);
+  bool trajectory_task_enabled_locked(const std::string & task_id) const;
+
+  struct TrajectoryActionSlot
+  {
+    rclcpp_action::GoalUUID uuid;
+    std::shared_ptr<FollowJointTrajectoryGoalHandle> handle;
+  };
   rcl_interfaces::msg::SetParametersResult on_parameters_set(
     const std::vector<rclcpp::Parameter> & parameters);
 
@@ -181,6 +192,9 @@ private:
   std::deque<std::shared_ptr<RuntimeTuningCommand>> pending_runtime_tuning_;
   std::atomic_bool parameter_update_pending_{false};
   std::mutex task_mutex_;
+  bool trajectory_execution_ready_{false};
+  std::map<std::string, TrajectoryActionSlot> trajectory_action_slots_;
+  rclcpp::TimerBase::SharedPtr trajectory_result_timer_;
 };
 
 }  // namespace task_priority_kinematic_control
