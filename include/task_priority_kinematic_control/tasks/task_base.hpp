@@ -7,6 +7,7 @@
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/parameter.hpp>
+#include <rclcpp/clock.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <map>
 #include <memory>
@@ -20,6 +21,7 @@ struct TaskContext
   std::shared_ptr<WholeBodyModel> model;
   // Initialization access only; never keep a plugin alive beyond its host loader.
   std::weak_ptr<KinematicsBackend> backend = {};
+  rclcpp::Clock::SharedPtr clock = {};
 };
 
 class TaskBase

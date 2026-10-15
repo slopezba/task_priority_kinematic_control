@@ -5,6 +5,7 @@
 #include <Eigen/Geometry>
 
 #include <map>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,9 @@ struct FrameState
 
 struct WholeBodyState
 {
+  // One ROS timestamp per host update; every trajectory samples this same clock.
+  int64_t ros_time_ns = 0;
+  bool ros_time_valid = false;
   Eigen::Vector3d base_position = Eigen::Vector3d::Zero();
   Eigen::Vector3d base_rpy = Eigen::Vector3d::Zero();
   Eigen::VectorXd joint_positions;

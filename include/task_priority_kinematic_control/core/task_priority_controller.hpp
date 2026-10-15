@@ -1,7 +1,9 @@
 #pragma once
 
 #include "task_priority_kinematic_control/core/pose_task_io.hpp"
+#include "task_priority_kinematic_control/core/cartesian_execution_io.hpp"
 #include "task_priority_kinematic_control/core/manual_task_io.hpp"
+#include "task_priority_kinematic_control/core/navigation_sample.hpp"
 
 #include "task_priority_kinematic_control/core/hierarchy_solver.hpp"
 #include "task_priority_kinematic_control/core/task_manager.hpp"
@@ -156,6 +158,8 @@ private:
   HierarchySolver solver_;
   PoseTaskIO pose_task_io_;
   ManualTaskIO manual_task_io_;
+  CartesianTrajectoryCoordinator cartesian_coordinator_;
+  CartesianExecutionIO cartesian_execution_io_;
   std::unique_ptr<CapsuleObserver> capsule_observer_;
 
   std::unique_ptr<pluginlib::ClassLoader<KinematicsBackend>> backend_loader_;
@@ -180,14 +184,15 @@ private:
   rclcpp::Service<srv::ReorderTasks>::SharedPtr reorder_tasks_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_srv_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
-  realtime_tools::RealtimeBuffer<std::shared_ptr<NavigatorMsg>> navigator_buffer_;
+  realtime_tools::RealtimeBuffer<NavigationSample> navigator_buffer_;
+  // Accessed under task_mutex_; only update() consumes the realtime buffer.
+  NavigationSample navigation_sample_;
 
   std::string backend_plugin_name_;
   std::string body_velocity_controller_name_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr active_pub_;
   bool base_command_via_topic_{false};
   double navigator_timeout_{0.0};
-  std::atomic<int64_t> navigator_received_ns_{0};
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr base_command_pub_;
   std::shared_ptr<realtime_tools::RealtimePublisher<geometry_msgs::msg::Twist>> base_command_rt_pub_;
   std::vector<std::string> left_arm_joints_;

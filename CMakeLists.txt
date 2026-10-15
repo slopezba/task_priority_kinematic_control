@@ -58,6 +58,7 @@ add_library(${core_target} SHARED
   src/core/capsule_observer.cpp
   src/core/stabilize_limits_markers.cpp
   src/core/task_manager.cpp
+  src/core/cartesian_trajectory_coordinator.cpp
   src/core/task_priority_controller.cpp
   src/core/runtime_node.cpp
   src/kinematics/kdl_kinematics_backend.cpp
@@ -72,6 +73,7 @@ add_library(${core_target} SHARED
   src/tasks/frame_pose_task.cpp
   src/tasks/joint_nominal_task.cpp
   src/tasks/joint_trajectory_task.cpp
+  src/tasks/base_pose_trajectory_task.cpp
   src/tasks/joint_limits_task.cpp
   src/tasks/stabilize_limits_task.cpp
   src/tasks/base_yaw_task.cpp
@@ -223,6 +225,18 @@ if(BUILD_TESTING)
   if(TARGET test_joint_trajectory_task)
     target_link_libraries(test_joint_trajectory_task ${core_target})
     ament_target_dependencies(test_joint_trajectory_task rclcpp)
+  endif()
+
+  ament_add_gtest(test_base_pose_trajectory_task test/test_base_pose_trajectory_task.cpp)
+  if(TARGET test_base_pose_trajectory_task)
+    target_link_libraries(test_base_pose_trajectory_task ${core_target})
+    ament_target_dependencies(test_base_pose_trajectory_task rclcpp sura_manipulation_actions)
+  endif()
+
+  ament_add_gtest(test_cartesian_trajectory_coordinator test/test_cartesian_trajectory_coordinator.cpp)
+  if(TARGET test_cartesian_trajectory_coordinator)
+    target_link_libraries(test_cartesian_trajectory_coordinator ${core_target})
+    ament_target_dependencies(test_cartesian_trajectory_coordinator rclcpp sura_manipulation_actions)
   endif()
 
   ament_add_gtest(test_joint_nominal_task test/test_joint_nominal_task.cpp)

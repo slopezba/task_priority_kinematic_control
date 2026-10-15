@@ -17,6 +17,53 @@ La idea central es resolver varias tareas cinemáticas ordenadas por prioridad. 
 - Mensajes y servicios para inspección y gestión en runtime.
 - Configuraciones de ejemplo para nodo normal y para `ros2_control`.
 
+## Seguimiento cartesiano de base y brazo
+
+`BasePoseTrajectoryTask` sigue XYZ/RPY de la base en el frame mundo mediante
+`MultiDOFJointTrajectory`. Comparte el interpolador con el planificador y limita
+feedforward y corrección con los valores de velocidad/aceleración del goal.
+
+El endpoint `task_priority/follow_cartesian_trajectory`, disponible en el runtime
+y el controlador, recibe `sura_manipulation_actions/action/FollowCartesianTrajectory`.
+Valida e instala base y brazo de forma atómica, con inicio común y reloj ROS.
+La nueva tarea se alimenta mediante ese coordinador. Los endpoints articulares
+existentes se conservan para uso individual.
+
+El orden articular del planificador puede diferir del configurado en el controlador.
+El coordinador identifica el brazo por el conjunto completo de nombres y adapta
+posiciones, velocidades, aceleraciones, esfuerzos, máscara articular y tolerancias
+al orden del controlador antes de validar o instalar el plan. Rechaza nombres
+duplicados, ausentes o desconocidos y arrays de tamaño incorrecto sin cambiar tareas.
+Los errores articulares del feedback conservan el orden del goal recibido, que es
+el mostrado por RQT; los seis ejes de base no cambian de orden.
+
+Mientras sigue el plan reserva las tareas, suspende los holds y la nivelación
+competidores y mantiene las articulaciones del otro brazo. Los límites y la
+autocolisión permanecen activos. Los límites del goal no modifican ni se cruzan
+con `stabilize_limits`; una intervención puede abortar por desviación. También
+se comprueban la pose medida de la pinza, el comando resultante del solver y las
+paradas de seguridad. `cartesian_execution.other_arm_tolerance` limita la
+desviación del brazo no seleccionado, por defecto a 0.05 rad.
+
+El éxito mantiene la pose final; cancelar o fallar mantiene el estado medido.
+`task_priority/release_cartesian_trajectory` (`std_srvs/Trigger`) libera la
+reserva y restaura las tareas con objetivos medidos. La estabilización recupera
+su política anterior, que puede volver a nivelar el vehículo. Los controladores
+deben estar activos antes de ejecutar.
+
+En el controlador ros2_control, `navigator_timeout` comprueba el tiempo transcurrido
+desde la recepción usando un reloj monotónico. El mensaje de navegación y su hora
+de recepción se transfieren juntos al ciclo de control. Un mensaje recibido después
+del inicio del ciclo no provoca un falso timeout. La admisión cartesiana comprueba
+la misma muestra que utiliza el controlador; una pérdida real de navegación sigue
+abortando el seguimiento y poniendo a cero las salidas. Las trayectorias conservan
+el reloj ROS y su comportamiento al pausar el tiempo de simulación. Si durante la
+pausa también cesa la navegación durante más del timeout en tiempo real, se aborta
+por pérdida de estado.
+
+La guía completa y un goal de ejemplo están en
+[sura_manipulation_actions](../sura_manipulation_actions/docs/single_arm_cartesian_planner.md).
+
 ## Modos de uso
 
 ### Nodo `task_priority_runtime`

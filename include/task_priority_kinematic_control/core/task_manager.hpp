@@ -12,6 +12,7 @@
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 
 #include <map>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,6 +28,10 @@ public:
     const rclcpp::Logger & logger);
 
   void configure(const TaskContext & context);
+  using MutationGuard = std::function<bool(const std::string &, std::string &)>;
+  void set_mutation_guard(MutationGuard guard) {mutation_guard_ = std::move(guard);}
+  bool allow_mutation(const std::string & id, std::string & message) const
+  {return !mutation_guard_ || mutation_guard_(id, message);}
 
   std::vector<TaskComputation> update_all(
     const WholeBodyState & state,
@@ -35,6 +40,7 @@ public:
   const std::vector<TaskComputation> & update_all_into(
     const WholeBodyState & state, const KinematicsBackend & backend);
   void finalize_command(WholeBodyCommand & command, int64_t timestamp_ns);
+  bool arm_motion_stopped() const;
 
   bool set_task_pose_feedforward_option(const std::string & task_id, const std::string & field,
     const rclcpp::Parameter & parameter, std::string & message);
@@ -81,6 +87,7 @@ private:
   std::vector<std::shared_ptr<TaskBase>> tasks_;
   std::vector<TaskComputation> computations_;
   std::shared_ptr<WholeBodyModel> model_;
+  MutationGuard mutation_guard_;
 };
 
 }  // namespace task_priority_kinematic_control

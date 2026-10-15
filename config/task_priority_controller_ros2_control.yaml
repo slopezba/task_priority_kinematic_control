@@ -11,8 +11,8 @@ task_priority_controller:
     robot_description_wait_timeout_sec: 5.0
     world_frame: world_ned
     base_frame: cirtesub/base_link
-    left_tip_frame: cirtesub/alpha_left/ee_base_link
-    right_tip_frame: cirtesub/alpha_right/ee_base_link
+    left_tip_frame: cirtesub/alpha_left/standard_jaws_tool
+    right_tip_frame: cirtesub/alpha_right/standard_jaws_tool
     left_arm_joints:
       - cirtesub/alpha_left/axis_b
       - cirtesub/alpha_left/axis_c
@@ -38,6 +38,9 @@ task_priority_controller:
       - left_pose
       - right_pose
       - joint_limits
+      - base_pose_trajectory
+      - left_joint_trajectory
+      - right_joint_trajectory
       - left_arm_nominal
       - right_arm_nominal
       - base_yaw
@@ -98,7 +101,7 @@ task_priority_controller:
     tasks.left_pose.feedforward_velocity_threshold: 0.001
     tasks.left_pose.priority: 1.0
     tasks.left_pose.group: left
-    tasks.left_pose.frame_id: cirtesub/alpha_left/ee_base_link
+    tasks.left_pose.frame_id: cirtesub/alpha_left/standard_jaws_tool
     tasks.left_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
 
     tasks.right_pose.plugin: task_priority_kinematic_control/EndEffectorPoseTask
@@ -107,7 +110,7 @@ task_priority_controller:
     tasks.right_pose.feedforward_velocity_threshold: 0.001
     tasks.right_pose.priority: 2.0
     tasks.right_pose.group: right
-    tasks.right_pose.frame_id: cirtesub/alpha_right/ee_base_link
+    tasks.right_pose.frame_id: cirtesub/alpha_right/standard_jaws_tool
     tasks.right_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
 
     tasks.EndEffectors_Relative_pose.plugin: task_priority_kinematic_control/EndEffectorsRelativePoseTask
@@ -223,3 +226,36 @@ task_priority_controller:
     tasks.base_yaw.group: base
     tasks.base_yaw.target_yaw: 0.0
     tasks.base_yaw.gain_scalar: 0.5
+
+    # Coordinated Cartesian execution owns these tasks only while tracking/holding.
+    tasks.base_pose_trajectory.plugin: task_priority_kinematic_control/BasePoseTrajectoryTask
+    tasks.base_pose_trajectory.enabled: false
+    tasks.base_pose_trajectory.priority: 8.0
+    tasks.base_pose_trajectory.group: base
+    tasks.base_pose_trajectory.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
+
+    tasks.left_joint_trajectory.plugin: task_priority_kinematic_control/JointTrajectoryTask
+    tasks.left_joint_trajectory.enabled: false
+    tasks.left_joint_trajectory.priority: 9.0
+    tasks.left_joint_trajectory.group: left
+    tasks.left_joint_trajectory.joint_names:
+      - cirtesub/alpha_left/axis_b
+      - cirtesub/alpha_left/axis_c
+      - cirtesub/alpha_left/axis_d
+      - cirtesub/alpha_left/axis_e
+    tasks.left_joint_trajectory.gain: [1.0, 1.0, 1.0, 1.0]
+    tasks.left_joint_trajectory.interpolation_method: quintic
+    tasks.left_joint_trajectory.hold_last_point: true
+
+    tasks.right_joint_trajectory.plugin: task_priority_kinematic_control/JointTrajectoryTask
+    tasks.right_joint_trajectory.enabled: false
+    tasks.right_joint_trajectory.priority: 10.0
+    tasks.right_joint_trajectory.group: right
+    tasks.right_joint_trajectory.joint_names:
+      - cirtesub/alpha_right/axis_b
+      - cirtesub/alpha_right/axis_c
+      - cirtesub/alpha_right/axis_d
+      - cirtesub/alpha_right/axis_e
+    tasks.right_joint_trajectory.gain: [1.0, 1.0, 1.0, 1.0]
+    tasks.right_joint_trajectory.interpolation_method: quintic
+    tasks.right_joint_trajectory.hold_last_point: true

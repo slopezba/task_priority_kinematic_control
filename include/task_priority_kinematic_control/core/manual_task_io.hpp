@@ -6,6 +6,7 @@
 #include <std_srvs/srv/trigger.hpp>
 #include <mutex>
 #include <algorithm>
+#include <functional>
 
 namespace task_priority_kinematic_control
 {
@@ -15,7 +16,8 @@ class ManualTaskIO
 public:
   template<class NodeT>
   void configure(NodeT * node, const std::vector<std::shared_ptr<TaskBase>> & tasks,
-    std::mutex & task_mutex)
+    std::mutex & task_mutex,
+    std::function<bool(const std::string &, std::string &)> mutation_guard = {})
   {
     services_.clear();
     subscriptions_.clear();
@@ -27,14 +29,15 @@ public:
         nominals_.push_back(nominal);
         subscriptions_.push_back(node->template create_subscription<sensor_msgs::msg::JointState>(
           prefix + "/joint_command", rclcpp::QoS(1),
-          [this, weak = std::weak_ptr<JointNominalTask>(nominal), &task_mutex,
+          [this, weak = std::weak_ptr<JointNominalTask>(nominal), &task_mutex, mutation_guard,
           logger = node->get_logger()](const sensor_msgs::msg::JointState::SharedPtr msg) {
             if (!msg) {return;}
             std::scoped_lock lock(task_mutex);
             if (auto task = weak.lock()) {
+              std::string message;
+              if (mutation_guard && !mutation_guard(task->id(), message)) {return;}
               auto command = *msg;
               if (!active_) {std::fill(command.velocity.begin(), command.velocity.end(), 0.0);}
-              std::string message;
               if (!task->set_joint_command(command, message)) {
                 RCLCPP_WARN(logger, "Rejected joint command for '%s': %s", task->id().c_str(), message.c_str());
               }
@@ -46,11 +49,12 @@ public:
       for (const bool enable : {true, false}) {
         services_.push_back(node->template create_service<std_srvs::srv::Trigger>(
           prefix + (enable ? "/enable_roll_pitch" : "/disable_roll_pitch"),
-          [weak = std::weak_ptr<FramePoseTask>(frame), &task_mutex, enable](
+          [weak = std::weak_ptr<FramePoseTask>(frame), &task_mutex, enable, mutation_guard](
             std_srvs::srv::Trigger::Request::SharedPtr,
             std_srvs::srv::Trigger::Response::SharedPtr response) {
             std::scoped_lock lock(task_mutex);
             if (auto task = weak.lock()) {
+              if (mutation_guard && !mutation_guard(task->id(), response->message)) {response->success = false; return;}
               response->success = task->set_allow_roll_pitch(enable, response->message);
             } else {response->success = false; response->message = "Task unavailable";}
           }));

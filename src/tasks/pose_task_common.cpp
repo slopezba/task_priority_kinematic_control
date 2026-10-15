@@ -66,6 +66,20 @@ void PoseTaskCommon::clear_feedforward()
   feedforward_.setZero();
 }
 
+void PoseTaskCommon::capture_measured_target(const Eigen::Isometry3d & pose)
+{
+  clear_feedforward();
+  pose_goal_.header.frame_id = context_.model->world_frame();
+  pose_goal_.pose.position.x = pose.translation().x();
+  pose_goal_.pose.position.y = pose.translation().y();
+  pose_goal_.pose.position.z = pose.translation().z();
+  const Eigen::Quaterniond q(pose.rotation());
+  pose_goal_.pose.orientation.x = q.x(); pose_goal_.pose.orientation.y = q.y();
+  pose_goal_.pose.orientation.z = q.z(); pose_goal_.pose.orientation.w = q.w();
+  has_pose_goal_ = true;
+  initialize_target_ = false;
+}
+
 bool PoseTaskCommon::set_enabled(bool enabled)
 {
   std::scoped_lock lock(feedforward_mutex_);

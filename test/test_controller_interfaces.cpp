@@ -7,6 +7,49 @@
 
 namespace task_priority_kinematic_control
 {
+TEST(NavigationSampleTest, MessageReceivedAfterCycleStartIsFreshAtConsumption)
+{
+  using namespace std::chrono_literals;
+  const auto cycle_start = NavigationSample::Clock::time_point{} + 10s;
+  NavigationSample sample{std::make_shared<sura_msgs::msg::Navigator>(), cycle_start + 1ms};
+  // The old check compared the cycle's ROS stamp with the newer receipt stamp
+  // and aborted on a negative age. Freshness now uses monotonic consumption time.
+  EXPECT_TRUE(sample.is_fresh(0.5, cycle_start + 2ms));
+}
+
+TEST(NavigationSampleTest, RetainsTimeoutAndRejectsMissingMessages)
+{
+  using namespace std::chrono_literals;
+  const auto received = NavigationSample::Clock::time_point{} + 10s;
+  NavigationSample sample{std::make_shared<sura_msgs::msg::Navigator>(), received};
+  EXPECT_TRUE(sample.is_fresh(0.5, received + 20ms));
+  EXPECT_TRUE(sample.is_fresh(0.5, received + 500ms));
+  EXPECT_FALSE(sample.is_fresh(0.5, received + 501ms));
+  EXPECT_TRUE(sample.is_fresh(0.0, received + 100s));
+  sample.message.reset();
+  EXPECT_FALSE(sample.is_fresh(0.5, received));
+  EXPECT_FALSE(sample.is_fresh(0.0, received));
+}
+
+TEST(NavigationSampleTest, RealtimeBufferKeepsMessageAndReceiptTogether)
+{
+  using namespace std::chrono_literals;
+  const auto received = NavigationSample::Clock::time_point{} + 10s;
+  auto first = std::make_shared<sura_msgs::msg::Navigator>();
+  auto second = std::make_shared<sura_msgs::msg::Navigator>();
+  realtime_tools::RealtimeBuffer<NavigationSample> buffer;
+  buffer.writeFromNonRT(NavigationSample{first, received});
+  const NavigationSample snapshot = *buffer.readFromRT();
+  buffer.writeFromNonRT(NavigationSample{second, received + 1s});
+  const NavigationSample next = *buffer.readFromRT();
+  EXPECT_EQ(snapshot.message, first);
+  EXPECT_EQ(snapshot.received, received);
+  EXPECT_FALSE(snapshot.is_fresh(0.5, received + 1s));
+  EXPECT_EQ(next.message, second);
+  EXPECT_EQ(next.received, received + 1s);
+  EXPECT_TRUE(next.is_fresh(0.5, received + 1s));
+}
+
 class ControllerInterfacesTest : public ::testing::Test
 {
 protected:

@@ -34,6 +34,7 @@ public:
     const KinematicsBackend & backend) override;
 
   bool set_pose_goal(const geometry_msgs::msg::PoseStamped & goal) override;
+  void capture_measured_relative_pose(const KinematicsBackend & backend);
   bool set_gain(const std::vector<double> & gain, std::string & message) override;
   void reset() override;
   msg::TaskStatus build_status() const override;

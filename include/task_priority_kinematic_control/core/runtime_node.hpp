@@ -1,6 +1,7 @@
 #pragma once
 
 #include "task_priority_kinematic_control/core/pose_task_io.hpp"
+#include "task_priority_kinematic_control/core/cartesian_execution_io.hpp"
 #include "task_priority_kinematic_control/core/manual_task_io.hpp"
 
 #include "task_priority_kinematic_control/core/hierarchy_solver.hpp"
@@ -79,11 +80,17 @@ private:
 
   std::shared_ptr<WholeBodyModel> model_;
   WholeBodyState state_;
+  int64_t navigator_received_ns_ = 0;
+  int64_t joints_received_ns_ = 0;
+  double navigator_timeout_ = 0.5;
+  double joint_state_timeout_ = 0.5;
   std::mutex task_mutex_;
   std::unique_ptr<TaskManager> task_manager_;
   HierarchySolver solver_;
   PoseTaskIO pose_task_io_;
   ManualTaskIO manual_task_io_;
+  CartesianTrajectoryCoordinator cartesian_coordinator_;
+  CartesianExecutionIO cartesian_execution_io_;
   std::unique_ptr<CapsuleObserver> capsule_observer_;
 
   pluginlib::ClassLoader<KinematicsBackend> backend_loader_;
@@ -117,7 +124,6 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_srv_;
 
   rclcpp::TimerBase::SharedPtr timer_;
-  std::mutex trajectory_action_mutex_;
   std::map<std::string, TrajectoryActionSlot> trajectory_action_slots_;
   rclcpp::TimerBase::SharedPtr trajectory_result_timer_;
   OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;

@@ -119,7 +119,7 @@ RuntimeNode::RuntimeNode(const rclcpp::NodeOptions & options)
   configure_model();
   configure_backend();
   configure_solver();
-  task_manager_->configure(TaskContext{model_, backend_});
+  task_manager_->configure(TaskContext{model_, backend_, get_clock()});
   capsule_observer_ = std::make_unique<CapsuleObserver>(task_manager_->tasks(),
     get_fully_qualified_name(), get_node_base_interface()->get_context());
   configure_publishers();
@@ -132,6 +132,7 @@ RuntimeNode::RuntimeNode(const rclcpp::NodeOptions & options)
 
 void RuntimeNode::declare_parameters()
 {
+  CartesianExecutionIO::declare_parameters(this);
   declare_if_missing<std::string>(*this, "backend_plugin", "task_priority_kinematic_control/KDLKinematicsBackend");
   declare_if_missing<std::string>(*this, "robot_description", "");
   declare_if_missing<std::string>(*this, "robot_description_source_node", "/robot_state_publisher");
@@ -154,6 +155,10 @@ void RuntimeNode::declare_parameters()
   declare_if_missing<std::string>(*this, "left_arm_command_topic", "/cirtesub/alpha/controller/alpha_left_forward_velocity_controller/commands");
   declare_if_missing<std::string>(*this, "right_arm_command_topic", "/cirtesub/alpha/controller/alpha_right_forward_velocity_controller/commands");
   declare_if_missing<std::vector<std::string>>(*this, "task_ids", {});
+  declare_if_missing<double>(*this, "navigator_timeout", 0.5);
+  declare_if_missing<double>(*this, "joint_state_timeout", 0.5);
+  navigator_timeout_ = get_parameter("navigator_timeout").as_double();
+  joint_state_timeout_ = get_parameter("joint_state_timeout").as_double();
   for (const auto & task_id : this->get_parameter("task_ids").as_string_array()) {
     const std::string prefix = "tasks." + task_id + ".";
     declare_if_missing<std::string>(*this, prefix + "plugin", "");
@@ -371,7 +376,8 @@ void RuntimeNode::configure_publishers()
 
 void RuntimeNode::configure_subscribers()
 {
-  pose_task_io_.configure(this, task_manager_->tasks(), model_->world_frame(), model_->base_frame());
+  pose_task_io_.configure(this, task_manager_->tasks(), model_->world_frame(), model_->base_frame(),
+    &task_mutex_, [this](const std::string & task, std::string & message) {return task_manager_->allow_mutation(task, message);});
   pose_task_io_.set_active(true);
   navigator_sub_ = this->create_subscription<sura_msgs::msg::Navigator>(
     this->get_parameter("navigator_topic").as_string(),
@@ -383,14 +389,27 @@ void RuntimeNode::configure_subscribers()
     std::bind(&RuntimeNode::joint_state_callback, this, std::placeholders::_1));
 
   task_target_subs_.clear();
-  manual_task_io_.configure(this, task_manager_->tasks(), task_mutex_);
+  cartesian_execution_io_.configure(this, cartesian_coordinator_, *task_manager_, model_,
+    task_mutex_, state_, backend_, [this]() {
+      const int64_t now_ns = now().nanoseconds();
+      const int64_t navigation_age = now_ns - navigator_received_ns_;
+      const int64_t joints_age = now_ns - joints_received_ns_;
+      return trajectory_action_slots_.empty() && state_.navigation_valid && state_.joints_valid &&
+        (navigator_timeout_ <= 0 || (navigation_age >= 0 && navigation_age <= navigator_timeout_*1e9)) &&
+        (joint_state_timeout_ <= 0 || (joints_age >= 0 && joints_age <= joint_state_timeout_*1e9));
+    });
+  manual_task_io_.configure(this, task_manager_->tasks(), task_mutex_,
+    [this](const std::string & task, std::string & message) {return task_manager_->allow_mutation(task, message);});
   manual_task_io_.set_active(true);
   task_joint_target_subs_.clear();
   task_joint_trajectory_subs_.clear();
   task_joint_trajectory_action_servers_.clear();
   for (const auto & task : task_manager_->tasks()) {
-    if (task->plugin_name().find("PoseTask") == std::string::npos) {
-      if (task->plugin_name().find("JointNominalTask") != std::string::npos) {
+    // Trajectory tasks expose their own typed interface; do not classify them
+    // by a substring that can mistake base trajectory tasks for pose targets.
+    if (std::dynamic_pointer_cast<BasePoseTrajectoryTask>(task)) {continue;}
+    if (!std::dynamic_pointer_cast<PoseTaskCommon>(task) && task->build_status().target_type != "pose") {
+      if (std::dynamic_pointer_cast<JointNominalTask>(task)) {
         const auto task_id = task->id();
         task_joint_target_subs_[task_id] =
           this->create_subscription<std_msgs::msg::Float64MultiArray>(
@@ -411,7 +430,7 @@ void RuntimeNode::configure_subscribers()
                 message.c_str());
             }
           });
-      } else if (task->plugin_name().find("JointTrajectoryTask") != std::string::npos) {
+      } else if (std::dynamic_pointer_cast<JointTrajectoryTask>(task)) {
         const auto task_id = task->id();
         task_joint_trajectory_subs_[task_id] =
           this->create_subscription<trajectory_msgs::msg::JointTrajectory>(
@@ -423,8 +442,8 @@ void RuntimeNode::configure_subscribers()
             }
 
             std::string message;
-            std::scoped_lock lock(trajectory_action_mutex_);
-            if (!trajectory_task_enabled(task_id) || trajectory_action_slots_.count(task_id)) {
+            std::scoped_lock lock(task_mutex_);
+            if (cartesian_coordinator_.reserved(task_id) || !trajectory_task_enabled(task_id) || trajectory_action_slots_.count(task_id)) {
               RCLCPP_WARN(this->get_logger(),
                 "Rejected trajectory topic for task '%s': disabled or owned by an action",
                 task_id.c_str());
@@ -446,8 +465,8 @@ void RuntimeNode::configure_subscribers()
           [this, task_id](const rclcpp_action::GoalUUID & uuid,
           std::shared_ptr<const control_msgs::action::FollowJointTrajectory::Goal>)
           {
-            std::scoped_lock lock(trajectory_action_mutex_);
-            if (!trajectory_task_enabled(task_id) || trajectory_action_slots_.count(task_id)) {
+            std::scoped_lock lock(task_mutex_);
+            if (cartesian_coordinator_.reserved(task_id) || !trajectory_task_enabled(task_id) || trajectory_action_slots_.count(task_id)) {
               return rclcpp_action::GoalResponse::REJECT;
             }
             trajectory_action_slots_.emplace(task_id, TrajectoryActionSlot{uuid, nullptr});
@@ -458,7 +477,7 @@ void RuntimeNode::configure_subscribers()
               control_msgs::action::FollowJointTrajectory>> handle)
           {
             std::string message;
-            std::scoped_lock lock(trajectory_action_mutex_);
+            std::scoped_lock lock(task_mutex_);
             const auto slot = trajectory_action_slots_.find(task_id);
             if (slot == trajectory_action_slots_.end() || slot->second.uuid != handle->get_goal_id()) {
               return rclcpp_action::CancelResponse::REJECT;
@@ -487,6 +506,7 @@ void RuntimeNode::configure_subscribers()
         }
 
         std::string message;
+        std::scoped_lock lock(task_mutex_);
         if (!task_manager_->set_task_pose_goal(task_id, *msg, message)) {
           RCLCPP_WARN(
             this->get_logger(),
@@ -547,6 +567,7 @@ void RuntimeNode::configure_services()
       const std::shared_ptr<srv::SwitchBackend::Request> request,
       std::shared_ptr<srv::SwitchBackend::Response> response) {
       std::scoped_lock lock(task_mutex_);
+      if (!task_manager_->allow_mutation("*", response->message)) {response->success = false; return;}
       try {
         auto candidate = backend_loader_.createSharedInstance(request->backend_name);
         candidate->configure(*model_, resolve_robot_description(), get_logger());
@@ -580,6 +601,7 @@ void RuntimeNode::configure_services()
       const std::shared_ptr<std_srvs::srv::Trigger::Request>,
       std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
       std::scoped_lock lock(task_mutex_);
+      cartesian_execution_io_.stop_locked("Task priority runtime reset");
       task_manager_->reset();
       response->success = true;
       response->message = "Solver state reset";
@@ -601,7 +623,7 @@ void RuntimeNode::execute_task_trajectory_goal(
   using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
   std::string error;
   {
-    std::scoped_lock lock(trajectory_action_mutex_);
+    std::scoped_lock lock(task_mutex_);
     const auto slot = trajectory_action_slots_.find(task_id);
     if (slot == trajectory_action_slots_.end() || slot->second.uuid != goal_handle->get_goal_id()) {
       error = "Trajectory admission expired";
@@ -632,7 +654,7 @@ void RuntimeNode::poll_task_trajectory_goals()
   using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
   std::vector<std::function<void()>> completions;
   {
-    std::scoped_lock lock(trajectory_action_mutex_);
+    std::scoped_lock lock(task_mutex_);
     for (auto slot = trajectory_action_slots_.begin(); slot != trajectory_action_slots_.end();) {
       const auto handle = slot->second.handle;
       if (!handle) {++slot; continue;}
@@ -680,45 +702,70 @@ void RuntimeNode::configure_timer()
 
 void RuntimeNode::navigator_callback(const sura_msgs::msg::Navigator::SharedPtr msg)
 {
-  state_.base_position = Eigen::Vector3d(
-    msg->position.position.x,
-    msg->position.position.y,
-    msg->position.position.z);
-  state_.base_rpy = Eigen::Vector3d(msg->rpy.x, msg->rpy.y, msg->rpy.z);
-  state_.navigation_valid = true;
+  std::scoped_lock lock(task_mutex_);
+  if (!msg) {return;}
+  const Eigen::Vector3d position(msg->position.position.x, msg->position.position.y, msg->position.position.z);
+  const Eigen::Vector3d rpy(msg->rpy.x, msg->rpy.y, msg->rpy.z);
+  state_.navigation_valid = position.allFinite() && rpy.allFinite();
+  if (!state_.navigation_valid) {return;}
+  state_.base_position = position; state_.base_rpy = rpy;
+  navigator_received_ns_ = now().nanoseconds();
 }
 
 void RuntimeNode::joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr msg)
 {
+  std::scoped_lock lock(task_mutex_);
+  if (!msg) {return;}
   const auto all_joints = model_->all_joint_names();
-  state_.joint_positions = Eigen::VectorXd::Zero(all_joints.size());
-  state_.joint_velocities = Eigen::VectorXd::Zero(all_joints.size());
+  Eigen::VectorXd position = Eigen::VectorXd::Zero(all_joints.size());
+  Eigen::VectorXd velocity = position;
   for (size_t i = 0; i < all_joints.size(); ++i) {
     const auto it = std::find(msg->name.begin(), msg->name.end(), all_joints[i]);
-    if (it == msg->name.end()) {
-      continue;
-    }
-    const size_t idx = static_cast<size_t>(std::distance(msg->name.begin(), it));
-    if (idx < msg->position.size()) {
-      state_.joint_positions(static_cast<Eigen::Index>(i)) = msg->position[idx];
-    }
-    if (idx < msg->velocity.size()) {
-      state_.joint_velocities(static_cast<Eigen::Index>(i)) = msg->velocity[idx];
-    }
+    if (it == msg->name.end()) {state_.joints_valid = false; return;}
+    const size_t index = static_cast<size_t>(std::distance(msg->name.begin(), it));
+    if (index >= msg->position.size() || !std::isfinite(msg->position[index])) {state_.joints_valid = false; return;}
+    position(i) = msg->position[index];
+    if (index < msg->velocity.size()) {velocity(i) = msg->velocity[index];}
   }
-  state_.joints_valid = true;
+  if (!velocity.allFinite()) {state_.joints_valid = false; return;}
+  state_.joint_positions = std::move(position); state_.joint_velocities = std::move(velocity);
+  state_.joints_valid = true; joints_received_ns_ = now().nanoseconds();
 }
 
 void RuntimeNode::timer_callback()
 {
   std::scoped_lock lock(task_mutex_);
-  if (!state_.navigation_valid || !state_.joints_valid) {
+  const int64_t now_ns = now().nanoseconds();
+  const int64_t navigation_age = now_ns - navigator_received_ns_;
+  const int64_t joints_age = now_ns - joints_received_ns_;
+  const bool navigation_fresh = navigator_timeout_ <= 0 || (navigation_age >= 0 && navigation_age <= navigator_timeout_*1e9);
+  const bool joints_fresh = joint_state_timeout_ <= 0 || (joints_age >= 0 && joints_age <= joint_state_timeout_*1e9);
+  if (!state_.navigation_valid || !state_.joints_valid || !navigation_fresh || !joints_fresh) {
+    if (cartesian_coordinator_.status().running) {
+      cartesian_coordinator_.cancel_to_measured(state_, "Whole-body state is stale or unavailable", false);
+    }
+    geometry_msgs::msg::TwistStamped base_zero;
+    base_zero.header.stamp = now(); base_zero.header.frame_id = model_->world_frame();
+    base_command_pub_->publish(base_zero);
+    std_msgs::msg::Float64MultiArray left_zero, right_zero;
+    left_zero.data.assign(model_->left_arm_dofs(), 0.0);
+    right_zero.data.assign(model_->right_arm_dofs(), 0.0);
+    left_arm_command_pub_->publish(left_zero); right_arm_command_pub_->publish(right_zero);
     publish_status();
     return;
   }
 
+  state_.ros_time_ns = now().nanoseconds();
+  state_.ros_time_valid = true;
   backend_->update(state_);
   const auto & task_outputs = task_manager_->update_all_into(state_, *backend_);
+  if (cartesian_coordinator_.status().running && task_manager_->arm_motion_stopped()) {
+    cartesian_coordinator_.cancel_to_measured(state_, "A safety task stopped arm motion", false);
+    task_manager_->update_all_into(state_, *backend_);
+  }
+  if (cartesian_coordinator_.update(state_, *backend_)) {
+    task_manager_->update_all_into(state_, *backend_);
+  }
   pose_task_io_.publish_targets(task_manager_->tasks(), task_outputs, now(), model_->world_frame());
   const auto tasks = task_manager_->tasks();
   for (size_t i = 0; i < tasks.size() && i < task_outputs.size(); ++i) {
@@ -752,6 +799,10 @@ void RuntimeNode::timer_callback()
     task_state_pubs_.at(tasks[i]->id())->publish(message);
   }
   WholeBodyCommand command = solver_.solve(task_outputs);
+  if (cartesian_coordinator_.observe_command(command, state_, *backend_)) {
+    task_manager_->update_all_into(state_, *backend_);
+    command = solver_.solve(task_outputs);
+  }
   task_manager_->finalize_command(command, this->now().nanoseconds());
   command.base_velocity = command.generalized_velocity.head(model_->base_dofs());
   command.left_arm_velocity = command.generalized_velocity.segment(model_->left_offset(), model_->left_arm_dofs());
@@ -759,6 +810,7 @@ void RuntimeNode::timer_callback()
 
   geometry_msgs::msg::TwistStamped base_msg;
   base_msg.header.stamp = this->now();
+  base_msg.header.frame_id = model_->world_frame();
   if (command.base_velocity.size() >= 1) { base_msg.twist.linear.x = command.base_velocity(0); }
   if (command.base_velocity.size() >= 2) { base_msg.twist.linear.y = command.base_velocity(1); }
   if (command.base_velocity.size() >= 3) { base_msg.twist.linear.z = command.base_velocity(2); }
@@ -811,6 +863,12 @@ rcl_interfaces::msg::SetParametersResult RuntimeNode::on_parameters_set(
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
   result.reason = "accepted";
+  std::unique_lock<std::mutex> task_lock(task_mutex_, std::try_to_lock);
+  if (!task_lock.owns_lock()) {
+    result.successful = false;
+    result.reason = "A controller update is in progress; retry the parameter change";
+    return result;
+  }
   const auto collision_validation = validate_collision_parameter_updates(parameters, task_manager_->tasks(), false);
   if (!collision_validation.successful) {return collision_validation;}
   const auto limits_validation = validate_joint_limits_marker_parameter_updates(parameters, task_manager_->tasks(), false);

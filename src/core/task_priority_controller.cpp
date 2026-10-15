@@ -295,6 +295,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_init()
     auto_declare_if_missing(this, "base_command_topic", std::string("/cirtesub/controller/body_velocity/setpoint"));
     auto_declare_if_missing(this, "navigator_timeout", 0.0);
     auto_declare_if_missing(this, "task_ids", std::vector<std::string>{});
+    CartesianExecutionIO::declare_parameters(get_node().get());
     declare_task_parameters();
   } catch (const std::exception & ex) {
     RCLCPP_ERROR(get_node()->get_logger(), "Exception in on_init: %s", ex.what());
@@ -486,7 +487,8 @@ controller_interface::CallbackReturn TaskPriorityController::on_configure(
   }
   active_pub_ = get_node()->create_publisher<std_msgs::msg::Bool>("~/active", rclcpp::QoS(1).transient_local());
   active_pub_->publish(std_msgs::msg::Bool{});
-  navigator_received_ns_.store(0);
+  navigation_sample_ = NavigationSample{};
+  navigator_buffer_.writeFromNonRT(navigation_sample_);
   model_ = std::make_shared<WholeBodyModel>();
   task_manager_ = std::make_unique<TaskManager>(
     get_node()->get_node_parameters_interface(), get_node()->get_logger());
@@ -546,8 +548,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_configure(
     rclcpp::SystemDefaultsQoS(),
     [this](const NavigatorMsg::SharedPtr msg)
     {
-      navigator_buffer_.writeFromNonRT(msg);
-      navigator_received_ns_.store(get_node()->now().nanoseconds());
+      navigator_buffer_.writeFromNonRT(NavigationSample{msg, NavigationSample::Clock::now()});
     });
   configure_external_interfaces();
 
@@ -650,7 +651,7 @@ void TaskPriorityController::refresh_task_manager()
   task_manager_ = std::make_unique<TaskManager>(
     get_node()->get_node_parameters_interface(), get_node()->get_logger());
   capsule_observer_.reset();
-  task_manager_->configure(TaskContext{model_, backend_});
+  task_manager_->configure(TaskContext{model_, backend_, get_node()->get_clock()});
   capsule_observer_ = std::make_unique<CapsuleObserver>(task_manager_->tasks(),
     get_node()->get_node_base_interface()->get_fully_qualified_name(), get_node()->get_node_base_interface()->get_context());
 }
@@ -991,6 +992,7 @@ void TaskPriorityController::configure_external_interfaces()
       std::shared_ptr<std_srvs::srv::Trigger::Response> response)
     {
       std::scoped_lock lock(task_mutex_);
+      cartesian_execution_io_.stop_locked("Task priority stopped by operator");
       task_manager_->disable_all_tasks();
       reset_commands();
       publish_zero_controller_output(get_node()->now());
@@ -999,9 +1001,17 @@ void TaskPriorityController::configure_external_interfaces()
     });
 
   pose_task_io_.configure(get_node().get(), task_manager_->tasks(),
-    model_->world_frame(), model_->base_frame());
+    model_->world_frame(), model_->base_frame(), &task_mutex_,
+    [this](const std::string & task, std::string & message) {return task_manager_->allow_mutation(task, message);});
   task_target_subs_.clear();
-  manual_task_io_.configure(get_node().get(), task_manager_->tasks(), task_mutex_);
+  cartesian_execution_io_.configure(get_node().get(), cartesian_coordinator_, *task_manager_, model_,
+    task_mutex_, state_, backend_, [this]() {
+      return trajectory_execution_ready_ && trajectory_action_slots_.empty() &&
+        get_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE &&
+        state_.navigation_valid && navigation_sample_.is_fresh(navigator_timeout_);
+    });
+  manual_task_io_.configure(get_node().get(), task_manager_->tasks(), task_mutex_,
+    [this](const std::string & task, std::string & message) {return task_manager_->allow_mutation(task, message);});
   task_joint_target_subs_.clear();
   task_joint_trajectory_subs_.clear();
   task_joint_trajectory_action_servers_.clear();
@@ -1011,8 +1021,9 @@ void TaskPriorityController::configure_external_interfaces()
     task_state_pubs_[task_id] = get_node()->create_publisher<msg::TaskState>(
       "task_priority/tasks/" + task_id + "/state", rclcpp::SystemDefaultsQoS());
 
-    if (task->plugin_name().find("PoseTask") == std::string::npos) {
-      if (task->plugin_name().find("JointNominalTask") != std::string::npos) {
+    if (std::dynamic_pointer_cast<BasePoseTrajectoryTask>(task)) {continue;}
+    if (!std::dynamic_pointer_cast<PoseTaskCommon>(task) && task->build_status().target_type != "pose") {
+      if (std::dynamic_pointer_cast<JointNominalTask>(task)) {
         const auto joint_target_callback = [this, task_id](const Float64MultiArray::SharedPtr msg)
         {
           if (!msg) {
@@ -1033,7 +1044,7 @@ void TaskPriorityController::configure_external_interfaces()
           "task_priority/tasks/" + task_id + "/joint_target",
           rclcpp::SystemDefaultsQoS(),
           joint_target_callback);
-      } else if (task->plugin_name().find("JointTrajectoryTask") != std::string::npos) {
+      } else if (std::dynamic_pointer_cast<JointTrajectoryTask>(task)) {
         const auto trajectory_topic = "task_priority/tasks/" + task_id + "/joint_trajectory";
         task_joint_trajectory_subs_[task_id] = get_node()->create_subscription<JointTrajectory>(
           trajectory_topic,
@@ -1047,7 +1058,7 @@ void TaskPriorityController::configure_external_interfaces()
             std::scoped_lock lock(task_mutex_);
             if (!trajectory_execution_ready_ ||
               get_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE ||
-              !trajectory_task_enabled_locked(task_id) || trajectory_action_slots_.count(task_id))
+              cartesian_coordinator_.reserved(task_id) || !trajectory_task_enabled_locked(task_id) || trajectory_action_slots_.count(task_id))
             {
               RCLCPP_WARN(get_node()->get_logger(),
                 "Rejected trajectory topic for task '%s': inactive, disabled or owned by an action",
@@ -1074,7 +1085,7 @@ void TaskPriorityController::configure_external_interfaces()
             std::scoped_lock lock(task_mutex_);
             if (!trajectory_execution_ready_ ||
               get_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE ||
-              !trajectory_task_enabled_locked(task_id) || trajectory_action_slots_.count(task_id))
+              cartesian_coordinator_.reserved(task_id) || !trajectory_task_enabled_locked(task_id) || trajectory_action_slots_.count(task_id))
             {
               return rclcpp_action::GoalResponse::REJECT;
             }
@@ -1457,6 +1468,7 @@ void TaskPriorityController::stop_task_trajectory_goals(const std::string & reas
   {
     std::scoped_lock lock(task_mutex_);
     trajectory_execution_ready_ = false;
+    cartesian_execution_io_.stop_locked(reason);
     if (task_manager_) {
       for (const auto & task : task_manager_->tasks()) {
         std::string message;
@@ -1493,21 +1505,34 @@ controller_interface::return_type TaskPriorityController::update(
   }
 
   process_pending_runtime_tuning();
+  std::unique_lock<std::mutex> state_lock(task_mutex_);
 
-  auto navigator_msg = navigator_buffer_.readFromRT();
-  const auto received_ns = navigator_received_ns_.load();
-  const auto age_ns = time.nanoseconds() - received_ns;
-  if (!navigator_msg || !(*navigator_msg) ||
-      (navigator_timeout_ > 0.0 && (age_ns < 0 || age_ns > navigator_timeout_ * 1e9))) {
+  navigation_sample_ = *navigator_buffer_.readFromRT();
+  // Take monotonic now AFTER reading the snapshot. A callback may receive a
+  // fresh message after the controller manager captured this cycle's ROS time.
+  if (!navigation_sample_.is_fresh(navigator_timeout_)) {
+    state_.navigation_valid = false;
+    if (cartesian_coordinator_.status().running) {
+      cartesian_coordinator_.cancel_to_measured(state_, "Navigation state is stale or unavailable", false);
+    }
     reset_commands();
     return controller_interface::return_type::OK;
   }
 
-  state_.base_position = Eigen::Vector3d(
-    (*navigator_msg)->position.position.x,
-    (*navigator_msg)->position.position.y,
-    (*navigator_msg)->position.position.z);
-  state_.base_rpy = Eigen::Vector3d((*navigator_msg)->rpy.x, (*navigator_msg)->rpy.y, (*navigator_msg)->rpy.z);
+  const auto & navigator_msg = navigation_sample_.message;
+  const Eigen::Vector3d base_position(navigator_msg->position.position.x,
+    navigator_msg->position.position.y, navigator_msg->position.position.z);
+  const Eigen::Vector3d base_rpy(navigator_msg->rpy.x, navigator_msg->rpy.y, navigator_msg->rpy.z);
+  if (!base_position.allFinite() || !base_rpy.allFinite()) {
+    state_.navigation_valid = false;
+    if (cartesian_coordinator_.status().running) {
+      cartesian_coordinator_.cancel_to_measured(state_, "Navigation state is nonfinite", false);
+    }
+    reset_commands();
+    return controller_interface::return_type::OK;
+  }
+  state_.base_position = base_position;
+  state_.base_rpy = base_rpy;
   state_.navigation_valid = true;
 
   const auto all_joints = model_->all_joint_names();
@@ -1523,6 +1548,7 @@ controller_interface::return_type TaskPriorityController::update(
     return controller_interface::return_type::ERROR;
   }
 
+  const Eigen::VectorXd last_valid_joint_positions = state_.joint_positions;
   state_.joint_positions = Eigen::VectorXd::Zero(joint_count);
   state_.joint_velocities = Eigen::VectorXd::Zero(joint_count);
   for (size_t i = 0; i < all_joints.size(); ++i) {
@@ -1533,6 +1559,11 @@ controller_interface::return_type TaskPriorityController::update(
         get_node()->get_logger(), *get_node()->get_clock(), 2000,
         "State interface has non-finite value for joint '%s'",
         all_joints[i].c_str());
+      state_.joints_valid = false;
+      state_.joint_positions = last_valid_joint_positions;
+      if (cartesian_coordinator_.status().running) {
+        cartesian_coordinator_.cancel_to_measured(state_, "Joint state is nonfinite", false);
+      }
       reset_commands();
       return controller_interface::return_type::OK;
     }
@@ -1547,16 +1578,29 @@ controller_interface::return_type TaskPriorityController::update(
       return controller_interface::return_type::OK;
     }
 
-    std::scoped_lock lock(task_mutex_);
+    state_.ros_time_ns = time.nanoseconds();
+    state_.ros_time_valid = true;
     backend_->update(state_);
     const auto & task_outputs = task_manager_->update_all_into(state_, *backend_);
+    if (cartesian_coordinator_.status().running && task_manager_->arm_motion_stopped()) {
+      cartesian_coordinator_.cancel_to_measured(state_, "A safety task stopped arm motion", false);
+      task_manager_->update_all_into(state_, *backend_);
+    }
+    if (cartesian_coordinator_.update(state_, *backend_)) {
+      task_manager_->update_all_into(state_, *backend_);
+    }
     command = solver_.solve(task_outputs);
+    if (cartesian_coordinator_.observe_command(command, state_, *backend_)) {
+      task_manager_->update_all_into(state_, *backend_);
+      command = solver_.solve(task_outputs);
+    }
     task_manager_->finalize_command(command, time.nanoseconds());
     publish_hierarchy_state(time);
     publish_task_states(task_outputs);
     pose_task_io_.publish_targets(task_manager_->tasks(), task_outputs, time, model_->world_frame());
   }
 
+  state_lock.unlock();
   Eigen::Matrix<double, 6, 1> base_command_world = Eigen::Matrix<double, 6, 1>::Zero();
   for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(active_base_dofs_.size()) &&
        i < command.generalized_velocity.size(); ++i) {

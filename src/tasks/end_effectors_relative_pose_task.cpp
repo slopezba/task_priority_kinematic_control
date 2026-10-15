@@ -184,6 +184,12 @@ bool EndEffectorsRelativePoseTask::set_pose_goal(const geometry_msgs::msg::PoseS
   return true;
 }
 
+void EndEffectorsRelativePoseTask::capture_measured_relative_pose(const KinematicsBackend & backend)
+{
+  target_relative_pose_ = backend.get_relative_transform(reference_frame_, controlled_frame_);
+  has_target_relative_pose_ = true;
+}
+
 bool EndEffectorsRelativePoseTask::set_gain(
   const std::vector<double> & gain,
   std::string & message)

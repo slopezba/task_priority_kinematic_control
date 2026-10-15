@@ -66,6 +66,12 @@
     <description>Repel joints from their limits.</description>
   </class>
   <class
+    name="task_priority_kinematic_control/BasePoseTrajectoryTask"
+    type="task_priority_kinematic_control::BasePoseTrajectoryTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Track a world-frame six-axis base pose trajectory with a shared ROS timeline.</description>
+  </class>
+  <class
     name="task_priority_kinematic_control/BaseYawTask"
     type="task_priority_kinematic_control::BaseYawTask"
     base_class_type="task_priority_kinematic_control::TaskBase">

@@ -56,6 +56,10 @@ void JointTrajectoryTask::configure(
       goal_tolerance_(static_cast<Eigen::Index>(i)) = tolerance[i];
     }
   }
+  configured_goal_tolerance_ = goal_tolerance_;
+  configured_trajectory_timeout_ = trajectory_timeout_;
+  configured_interpolation_method_ = interpolation_method_;
+  configured_hold_last_point_ = hold_last_point_;
 }
 
 TaskComputation JointTrajectoryTask::update(
@@ -79,8 +83,22 @@ TaskComputation JointTrajectoryTask::update(
     return computation;
   }
 
-  const auto elapsed_duration = SteadyClock::now() - start_time_;
-  const double elapsed = std::chrono::duration<double>(elapsed_duration).count();
+  double elapsed = std::chrono::duration<double>(SteadyClock::now() - start_time_).count();
+  if (use_ros_time_) {
+    const int64_t now_ns = state.ros_time_valid ? state.ros_time_ns : context_.clock->now().nanoseconds();
+    if (ros_cycle_seen_ && now_ns < last_ros_time_ns_) {
+      trajectory_active_ = false;
+      timed_out_ = true;
+      succeeded_ = false;
+      status_message_ = "ROS time moved backwards";
+      computation.active = false;
+      computation.status_message = status_message_;
+      return computation;
+    }
+    last_ros_time_ns_ = now_ns;
+    ros_cycle_seen_ = true;
+    elapsed = static_cast<double>(now_ns - start_time_ros_ns_) * 1e-9;
+  }
   const double duration = trajectory_duration_locked();
   if (!(succeeded_ && hold_last_point_) && elapsed > duration + trajectory_timeout_) {
     trajectory_active_ = false;
@@ -92,7 +110,8 @@ TaskComputation JointTrajectoryTask::update(
     return computation;
   }
 
-  const auto sample = sample_at_locked(elapsed);
+  auto sample = sample_at_locked(elapsed);
+  if (elapsed < 0.0) {sample.velocity.setZero(); sample.has_velocity = true;}
   current_target_ = sample.position;
 
   computation.jacobian = Eigen::MatrixXd::Zero(joint_names_.size(), context_.model->total_dofs());
@@ -115,7 +134,7 @@ TaskComputation JointTrajectoryTask::update(
   final_error_norm_ = last_error_.norm();
   bool within_tolerance = true;
   for (Eigen::Index i = 0; i < last_error_.size(); ++i) {
-    if (std::abs(last_error_(i)) > goal_tolerance_(i)) {
+    if (std::abs(last_error_(i)) > goal_tolerance_(i) + 1e-9) {
       within_tolerance = false;
       break;
     }
@@ -129,7 +148,7 @@ TaskComputation JointTrajectoryTask::update(
       computation.active = false;
     }
   } else {
-    status_message_ = "tracking";
+    status_message_ = elapsed < 0.0 ? "waiting_for_start" : "tracking";
   }
   computation.status_message = status_message_;
   return computation;
@@ -149,8 +168,24 @@ bool JointTrajectoryTask::set_joint_trajectory(
     return false;
   }
 
+  const int64_t stamp_ns = static_cast<int64_t>(trajectory.header.stamp.sec) * 1000000000LL +
+    trajectory.header.stamp.nanosec;
+  if (stamp_ns != 0 && !context_.clock) {
+    message = "A stamped trajectory requires a ROS clock";
+    return false;
+  }
+  const int64_t now_ns = context_.clock ? context_.clock->now().nanoseconds() : 0;
+  if (stamp_ns != 0 && stamp_ns < now_ns) {
+    message = "Trajectory start timestamp is in the past";
+    return false;
+  }
+
   samples_ = std::move(samples);
   start_time_ = SteadyClock::now();
+  use_ros_time_ = static_cast<bool>(context_.clock);
+  start_time_ros_ns_ = stamp_ns == 0 ? now_ns : stamp_ns;
+  last_ros_time_ns_ = now_ns;
+  ros_cycle_seen_ = false;
   current_target_ = samples_.front().position;
   last_error_ = Eigen::VectorXd::Zero(joint_names_.size());
   final_error_norm_ = std::numeric_limits<double>::infinity();
@@ -346,6 +381,41 @@ bool JointTrajectoryTask::validate_and_map_trajectory(
     samples.push_back(sample);
   }
   return true;
+}
+
+bool JointTrajectoryTask::validate_trajectory(
+  const trajectory_msgs::msg::JointTrajectory & trajectory, std::string & message) const
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<Sample> samples;
+  return validate_and_map_trajectory(trajectory, samples, message);
+}
+
+bool JointTrajectoryTask::sample_trajectory(double elapsed, Eigen::VectorXd & position) const
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (samples_.empty()) {return false;}
+  position = sample_at_locked(elapsed).position;
+  return true;
+}
+
+void JointTrajectoryTask::set_execution_tolerances(
+  const std::vector<double> & tolerance, double timeout)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  goal_tolerance_ = Eigen::Map<const Eigen::VectorXd>(tolerance.data(), tolerance.size());
+  trajectory_timeout_ = timeout;
+  interpolation_method_ = "quintic";
+  hold_last_point_ = true;
+}
+
+void JointTrajectoryTask::restore_execution_defaults()
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  goal_tolerance_ = configured_goal_tolerance_;
+  trajectory_timeout_ = configured_trajectory_timeout_;
+  interpolation_method_ = configured_interpolation_method_;
+  hold_last_point_ = configured_hold_last_point_;
 }
 
 JointTrajectoryTask::Sample JointTrajectoryTask::sample_at_locked(double elapsed) const

@@ -614,6 +614,17 @@ bool EndEffectorPlanRelativePoseTask::set_pose_goal(const geometry_msgs::msg::Po
   return true;
 }
 
+void EndEffectorPlanRelativePoseTask::capture_measured_relative_pose(const KinematicsBackend & backend)
+{
+  stop_planner();
+  const auto measured = backend.get_relative_transform(reference_frame_, controlled_frame_);
+  std::lock_guard<std::mutex> lock(mutex_);
+  target_relative_pose_ = measured;
+  has_target_relative_pose_ = true;
+  mode_ = Mode::kServoRelativePose;
+  status_message_ = "holding_measured";
+}
+
 bool EndEffectorPlanRelativePoseTask::set_gain(
   const std::vector<double> & gain,
   std::string & message)

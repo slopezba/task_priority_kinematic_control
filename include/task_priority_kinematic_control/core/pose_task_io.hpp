@@ -8,6 +8,7 @@
 #include <atomic>
 #include <map>
 #include <stdexcept>
+#include <functional>
 
 namespace task_priority_kinematic_control
 {
@@ -29,7 +30,9 @@ public:
 
   template<class NodeT>
   void configure(NodeT * node, const std::vector<std::shared_ptr<TaskBase>> & tasks,
-    const std::string & world_frame, const std::string & base_frame)
+    const std::string & world_frame, const std::string & base_frame,
+    std::mutex * host_mutex = nullptr,
+    std::function<bool(const std::string &, std::string &)> mutation_guard = {})
   {
     set_active(false);
     std::scoped_lock callback_lock(callback_mutex_);
@@ -50,9 +53,9 @@ public:
         node->template create_subscription<geometry_msgs::msg::TwistStamped>(
         prefix + "/feedforward", rclcpp::QoS(1),
         [this, weak = std::weak_ptr<PoseTaskCommon>(pose_task),
-        world_frame, base_frame, logger = node->get_logger()](
+        world_frame, base_frame, host_mutex, mutation_guard, logger = node->get_logger()](
           const geometry_msgs::msg::TwistStamped::SharedPtr msg) {
-          std::scoped_lock callback_lock(callback_mutex_);
+          std::unique_lock<std::mutex> callback_lock(callback_mutex_);
           auto task = weak.lock();
           if (!task || !msg || !active_.load()) {return;}
           const auto epoch = task->feedforward_epoch();
@@ -79,7 +82,17 @@ public:
           } catch (const std::exception & error) {
             RCLCPP_WARN(logger, "Feedforward for '%s' cleared: %s", task->id().c_str(), error.what());
           }
-          if (active_.load()) {task->set_feedforward(velocity, epoch);}
+          // Never acquire the host mutex while holding callback_mutex_: the
+          // lifecycle uses the opposite order when clearing all feedforward.
+          callback_lock.unlock();
+          if (host_mutex) {
+            std::scoped_lock host_lock(*host_mutex);
+            if (!active_.load() || task->feedforward_epoch() != epoch) {return;}
+            std::string message;
+            if (mutation_guard && !mutation_guard(task->id(), message)) {return;}
+            // A deliberate release can enable the task and refresh its epoch.
+            if (active_.load()) {task->set_feedforward(velocity, task->feedforward_epoch());}
+          } else if (active_.load()) {task->set_feedforward(velocity, epoch);}
         });
     }
   }

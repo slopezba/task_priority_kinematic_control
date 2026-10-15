@@ -16,6 +16,9 @@ public:
   uint64_t feedforward_epoch() const;
   bool set_feedforward(const PoseVelocity & velocity, uint64_t epoch);
   void clear_feedforward();
+  // Used when returning ownership after trajectory execution: capture the
+  // current frame even when auto_update_target_pose is disabled.
+  void capture_measured_target(const Eigen::Isometry3d & pose);
   bool set_feedforward_option(const std::string & field, const rclcpp::Parameter & parameter,
     std::string & message);
   bool set_enabled(bool enabled) override;

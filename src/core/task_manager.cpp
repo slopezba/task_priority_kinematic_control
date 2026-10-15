@@ -77,9 +77,16 @@ void TaskManager::finalize_command(WholeBodyCommand & command, int64_t timestamp
   for (const auto & task : tasks_) {task->observe_command(command, timestamp_ns);}
 }
 
+bool TaskManager::arm_motion_stopped() const
+{
+  return std::any_of(computations_.begin(), computations_.end(),
+    [](const TaskComputation & c) {return c.stop_arm_motion;});
+}
+
 bool TaskManager::set_task_pose_feedforward_option(const std::string & task_id,
   const std::string & field, const rclcpp::Parameter & parameter, std::string & message)
 {
+  if (!allow_mutation(task_id, message)) {return false;}
   for (const auto & task : tasks_) {
     if (task->id() != task_id) {continue;}
     if (auto pose = std::dynamic_pointer_cast<PoseTaskCommon>(task)) {
@@ -94,6 +101,7 @@ bool TaskManager::set_task_pose_feedforward_option(const std::string & task_id,
 
 bool TaskManager::set_task_enabled(const std::string & task_id, bool enabled, std::string & message)
 {
+  if (!allow_mutation(task_id, message)) {return false;}
   for (auto & task : tasks_) {
     if (task->id() == task_id) {
       task->set_enabled(enabled);
@@ -110,6 +118,7 @@ bool TaskManager::set_task_pose_goal(
   const geometry_msgs::msg::PoseStamped & goal,
   std::string & message)
 {
+  if (!allow_mutation(task_id, message)) {return false;}
   for (auto & task : tasks_) {
     if (task->id() == task_id) {
       const bool accepted = task->set_pose_goal(goal);
@@ -126,6 +135,7 @@ bool TaskManager::set_task_joint_target(
   const std::vector<double> & target,
   std::string & message)
 {
+  if (!allow_mutation(task_id, message)) {return false;}
   for (auto & task : tasks_) {
     if (task->id() == task_id) {
       return task->set_joint_target(target, message);
@@ -140,6 +150,7 @@ bool TaskManager::set_task_joint_trajectory(
   const trajectory_msgs::msg::JointTrajectory & trajectory,
   std::string & message)
 {
+  if (!allow_mutation(task_id, message)) {return false;}
   for (auto & task : tasks_) {
     if (task->id() == task_id) {
       return task->set_joint_trajectory(trajectory, message);
@@ -151,6 +162,7 @@ bool TaskManager::set_task_joint_trajectory(
 
 bool TaskManager::cancel_task_joint_trajectory(const std::string & task_id, std::string & message)
 {
+  if (!allow_mutation(task_id, message)) {return false;}
   for (auto & task : tasks_) {
     if (task->id() == task_id) {
       return task->cancel_joint_trajectory(message);
@@ -178,6 +190,7 @@ bool TaskManager::set_task_gain(
   const std::vector<double> & gain,
   std::string & message)
 {
+  if (!allow_mutation(task_id, message)) {return false;}
   for (auto & task : tasks_) {
     if (task->id() == task_id) {
       return task->set_gain(gain, message);
@@ -192,6 +205,7 @@ bool TaskManager::set_task_gain_scalar(
   double gain,
   std::string & message)
 {
+  if (!allow_mutation(task_id, message)) {return false;}
   for (auto & task : tasks_) {
     if (task->id() == task_id) {
       return task->set_gain_scalar(gain, message);
@@ -206,6 +220,7 @@ bool TaskManager::set_task_joint_activation(
   const std::vector<bool> & activation,
   std::string & message)
 {
+  if (!allow_mutation(task_id, message)) {return false;}
   for (auto & task : tasks_) {
     if (task->id() == task_id) {
       return task->set_joint_activation(activation, message);
@@ -224,6 +239,7 @@ void TaskManager::disable_all_tasks()
 
 bool TaskManager::reorder_tasks(const std::vector<std::string> & ordered_ids, std::string & message)
 {
+  if (!allow_mutation("*", message)) {return false;}
   if (ordered_ids.size() != tasks_.size()) {
     message = "Ordered task list size does not match current task count";
     return false;
@@ -256,7 +272,7 @@ std::vector<msg::TaskStatus> TaskManager::get_task_statuses() const
   statuses.reserve(tasks_.size());
   for (const auto & task : tasks_) {
     auto status = task->build_status();
-    if (status.target_type == "none" && task->plugin_name().find("PoseTask") != std::string::npos) {
+    if (status.target_type == "none" && std::dynamic_pointer_cast<PoseTaskCommon>(task)) {
       status.target_type = "pose";
     }
     statuses.push_back(status);

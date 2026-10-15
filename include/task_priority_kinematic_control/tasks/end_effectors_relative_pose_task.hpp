@@ -22,6 +22,7 @@ public:
   bool set_gain(const std::vector<double> & gain, std::string & message) override;
   msg::TaskStatus build_status() const override;
   std::vector<double> current_target() const override;
+  void capture_measured_relative_pose(const KinematicsBackend & backend);
 
 private:
   std::string reference_frame_;

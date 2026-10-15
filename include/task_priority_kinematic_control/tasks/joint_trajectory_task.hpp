@@ -33,6 +33,13 @@ public:
   msg::TaskStatus build_status() const override;
   std::vector<double> current_target() const override;
 
+  // The coordinated executor validates before changing any task and applies
+  // goal-local tolerances without changing ROS parameters.
+  bool validate_trajectory(const trajectory_msgs::msg::JointTrajectory &, std::string &) const;
+  bool sample_trajectory(double elapsed, Eigen::VectorXd & position) const;
+  void set_execution_tolerances(const std::vector<double> & tolerance, double timeout);
+  void restore_execution_defaults();
+
 private:
   using SteadyClock = std::chrono::steady_clock;
 
@@ -65,6 +72,14 @@ private:
   mutable std::mutex mutex_;
   std::vector<Sample> samples_;
   SteadyClock::time_point start_time_;
+  int64_t start_time_ros_ns_{0};
+  int64_t last_ros_time_ns_{0};
+  bool use_ros_time_{false};
+  bool ros_cycle_seen_{false};
+  Eigen::VectorXd configured_goal_tolerance_;
+  double configured_trajectory_timeout_{0.5};
+  std::string configured_interpolation_method_{"linear"};
+  bool configured_hold_last_point_{true};
   Eigen::VectorXd current_target_;
   Eigen::VectorXd last_error_;
   double final_error_norm_{0.0};
