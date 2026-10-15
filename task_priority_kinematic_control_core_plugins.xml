@@ -72,6 +72,12 @@
     <description>Track a desired base yaw angle.</description>
   </class>
   <class
+    name="task_priority_kinematic_control/StabilizeLimitsTask"
+    type="task_priority_kinematic_control::StabilizeLimitsTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Repel base roll and pitch from configurable limits with hysteresis.</description>
+  </class>
+  <class
     name="task_priority_kinematic_control/SelfCollisionAvoidanceTask"
     type="task_priority_kinematic_control::SelfCollisionAvoidanceTask"
     base_class_type="task_priority_kinematic_control::TaskBase">

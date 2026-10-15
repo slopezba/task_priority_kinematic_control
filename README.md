@@ -142,7 +142,7 @@ En ambos modos:
 | `4` | `angular.y` |
 | `5` | `angular.z` |
 
-Si usas `[0, 1, 2, 5]`, por ejemplo, el solver solo controlará traslación XYZ y yaw. El controlador `ros2_control` siempre expone 6 interfaces de comando de base, pero rellena con cero los DOFs no activos.
+Si usas `[0, 1, 2, 5]`, por ejemplo, el solver solo controlará traslación XYZ y velocidad angular Z en ejes del mundo. Los DOFs no activos se rellenan con cero antes de convertir la velocidad a ejes de la base; esta rotación puede generar componentes en otros ejes de la base. El controlador `ros2_control` siempre envía las 6 componentes del comando de base.
 
 ## Solver jerárquico
 
@@ -291,7 +291,7 @@ Plugin:
 task_priority_kinematic_control/FramePoseTask
 ```
 
-Controla la pose completa de un frame arbitrario. También puede controlar la base si `frame_id == base_frame`.
+Controla los ejes seleccionados de la pose de un frame arbitrario. También puede controlar la base si `frame_id == base_frame`.
 
 Parámetros:
 
@@ -299,6 +299,10 @@ Parámetros:
 | --- | --- | --- |
 | `frame_id` | string | Frame a controlar. Si no se define, usa `base_frame`. |
 | `gain` | double[6] | Ganancias de pose completa. |
+| `activation` | int[6] | Máscara 0/1 en orden x, y, z, rotación X, rotación Y, rotación Z. Omitida o vacía activa los seis ejes. |
+| `feedforward_timeout` | double | Caducidad en segundos; 0 mantiene el comportamiento sin caducidad. Se configura al iniciar. |
+| `roll_pitch_control` | bool | Activa la política de inclinación para la base con máscara `[0,0,0,1,1,0]`; false por defecto. |
+| `allow_roll_pitch` | bool | Permiso inicial de inclinación; false fija roll/pitch a cero cuando la política está activa. |
 
 Entrada runtime:
 
@@ -309,6 +313,114 @@ geometry_msgs/msg/PoseStamped
 
 Si controla la base, usa directamente `Navigator.position` y `Navigator.rpy`. Si controla otro frame, usa el backend cinemático.
 
+Los ejes de la máscara están expresados en el frame mundo; las componentes
+angulares son las del error de orientación y de la velocidad angular, no tasas
+de Euler. Los ejes excluidos se eliminan del Jacobiano y su feedforward se ignora,
+también al evaluar el umbral de actualización automática del objetivo.
+La configuración dual de CIRTESUB usa `stabilize` con `[0, 0, 0, 1, 1, 0]`
+y prioridad 3, y `base_pose` con `[1, 1, 1, 0, 0, 1]` y prioridad 6.
+
+Con `roll_pitch_control: true`, se usan errores de roll/pitch y el Jacobiano de
+sus tasas a partir de la velocidad angular en mundo. Yaw queda libre y no cambia
+los setpoints de inclinación. Los servicios `std_srvs/Trigger`
+`<prefijo de tareas>/<id>/enable_roll_pitch` y `disable_roll_pitch` permiten o
+bloquean inclinaciones sin deshabilitar la tarea. Al permitirlas, el objetivo
+sigue el movimiento y captura la inclinación medida en el primer ciclo con
+velocidad cero o caducada. Al bloquearlas vuelve a cero. Los objetivos de pose
+externos no sustituyen esta referencia gestionada por la política.
+La configuración dual usa `feedforward_timeout: 0.5` en `stabilize`.
+La singularidad de Euler próxima a pitch ±90° desactiva el cálculo de esta tarea.
+
+### `StabilizeLimitsTask`
+
+Plugin: `task_priority_kinematic_control/StabilizeLimitsTask`.
+
+Protege los límites de roll/pitch de la base mediante restricciones que se
+activan cerca de los límites y se liberan con histéresis. Es independiente de
+`stabilize`: no recibe objetivos de pose ni feedforward y no tiene servicios
+`enable_roll_pitch`/`disable_roll_pitch`. Usa los servicios generales de tareas
+para habilitación, deshabilitación y prioridad. La configuración dual de
+CIRTESUB la registra como `stabilize_limits`, con prioridad 2 y apagada al inicio.
+El teleop conserva su comportamiento y no cambia el estado de esta tarea.
+
+Todos los límites y ajustes se leen del YAML al configurar el controlador:
+
+| Parámetro | Tipo | Descripción |
+| --- | --- | --- |
+| `lower_limits` | double[2] | Límites inferiores `[roll, pitch]`, en radianes. Obligatorio. |
+| `upper_limits` | double[2] | Límites superiores `[roll, pitch]`, en radianes. Obligatorio. |
+| `alpha` | double | Distancia al límite para activar la restricción; valor inicial 0.06981317 rad (4°). |
+| `delta` | double | Distancia al límite para liberar la restricción; valor inicial 0.13962634 rad (8°). |
+| `eps` | double | Tolerancia de liberación; valor inicial 0.0001 rad. |
+| `gain_scalar` | double | Ganancia correctora no negativa; valor inicial 2.0. |
+| `max_repulsive_velocity` | double | Máxima tasa correctora de roll/pitch, en rad/s; valor inicial 0.3. |
+| `debug` | bool | Muestrear y publicar los indicadores solamente en modo debug; false por defecto, true en el perfil dual. |
+| `publish_marker_rate` | double | Frecuencia de muestreo y publicación de markers en Hz; 2 por defecto y en el perfil dual. Requiere reconfigurar para cambiarla. |
+| `enabled`, `priority`, `group` | bool, double, string | Ajustes comunes de la tarea. |
+
+Los márgenes son comunes a ambos ejes. Debe cumplirse `0 <= alpha < delta`,
+`0 <= eps < delta-alpha`, y cada intervalo debe ser mayor que `2*delta`.
+Los límites de pitch deben estar estrictamente entre -π/2 y π/2 para evitar
+incluir la singularidad de Euler. Todos los valores numéricos deben ser finitos.
+
+Con límites de ±20°, se activa a ±16° y se libera aproximadamente a ±12°.
+La velocidad correctora apunta a `lower+delta` o `upper-delta`, limitada por
+`max_repulsive_velocity`. Cada eje se activa por separado; las filas inactivas
+del Jacobiano son cero. Yaw, traslaciones y articulaciones quedan libres de esta
+restricción. Se usa el Jacobiano de tasas de roll/pitch respecto a la velocidad
+angular en mundo, teniendo en cuenta el yaw actual.
+
+Deshabilitar o reiniciar borra la histéresis. Navegación ausente, valores no
+finitos o una singularidad de pitch producen una tarea inactiva con diagnóstico.
+Estas restricciones siguen el mecanismo de activación del solver existente.
+
+Los indicadores se publican como `visualization_msgs/MarkerArray` en
+`<nombre completo del nodo controlador>/stabilize_limits/limits_markers`.
+Para el perfil dual, el tópico es:
+
+```text
+/cirtesub/alpha/controller/task_priority_controller/stabilize_limits/limits_markers
+```
+
+El perfil `cirtesub.rviz` incluye el display **Stabilize limits**. Se muestran
+dos indicadores sin texto junto a la base, con arco de límites, bandas de
+activación, marcas perpendiculares y flecha del ángulo actual. El indicador de
+roll está centrado lateralmente en `[0, 0, -0.15]` de la base; el de pitch está en
+`[0, 0.22, -0.18]` metros, en el mismo frame.
+Cada arco y su flecha comparten centro; el radio del arco es 0.18 m y la flecha
+mide 0.16 m. Las marcas perpendiculares del límite son rojas; las del umbral
+de activación (`lower+alpha`, `upper-alpha`) son naranjas. El arco, las bandas
+y la flecha adoptan el color del estado de su eje:
+
+- Verde: eje libre, a más de `delta` del límite.
+- Naranja: cerca del límite, dentro de `delta`, pero restricción inactiva.
+- Rojo: restricción actuando, incluyendo el estado conservado por histéresis.
+- Gris: tarea deshabilitada; todos los elementos, incluidas las marcas
+  perpendiculares, siguen visibles en gris con debug activo y datos válidos.
+
+La visualización usa tres snapshots fijos sin bloqueos. Con `debug: false`
+no se generan snapshots; habilitado, se muestrean a `publish_marker_rate`
+usando la marca temporal del control. Los markers y sus vectores de puntos se
+preasignan al crear el observador; la geometría de límites se calcula una vez
+y se reutiliza. Solo se actualizan colores, marcas temporales y extremos de
+flechas. La creación y publicación ROS/DDS quedan en el hilo del observador,
+fuera del ciclo de control. Esta separación no garantiza por sí sola tiempo
+real estricto del controlador completo.
+
+El parámetro `debug` se puede alternar en ejecución. Al apagarlo se envía una
+eliminación de los indicadores visibles; también se borran ante navegación
+inválida o si los snapshots superan `max(1, 2/publish_marker_rate)` segundos de
+antigüedad. Los markers caducan tras `max(2, 3/publish_marker_rate)` segundos
+como respaldo ante una interrupción del publicador (2 s a 2 Hz). La
+visualización no habilita la tarea ni cambia las restricciones o prioridades.
+
+La jerarquía de la configuración dual es: `joint_limits` (0),
+`self_collision_avoidance` (1), `stabilize_limits` (2), `stabilize` (3),
+`right_pose` (4), `left_pose` (5), `base_pose` (6), `left_joint_trajectory` (7),
+`right_joint_trajectory` (8), `bimanual_joint_trajectory` (9),
+`left_arm_nominal` (10), `right_arm_nominal` (11), `EndEffectors_Relative_pose`
+(12), `ee_plan_relative_pose` (13) y `base_yaw` (14).
+
 ### `JointNominalTask`
 
 Plugin:
@@ -318,6 +430,16 @@ task_priority_kinematic_control/JointNominalTask
 ```
 
 Empuja un conjunto de articulaciones hacia una configuración nominal. Es útil como tarea secundaria para evitar posturas raras o mantener el brazo cerca de una zona cómoda.
+
+También recibe `sensor_msgs/JointState` en
+`<prefijo de tareas>/<id>/joint_command`, con todos los nombres configurados,
+posiciones objetivo y velocidades de feedforward. Se aceptan nombres en distinto
+orden y se aplican posición y velocidad juntas bajo el bloqueo del host.
+El comando es `v_ff + gain * (objetivo - posición)` en los ejes activos.
+Mensajes incompletos, duplicados o no finitos borran las velocidades y conservan
+el objetivo anterior. Deshabilitar, reiniciar o caducar también borra velocidades.
+`joint_command_timeout` vale 0,5 s por defecto y debe ser positivo.
+La entrada `joint_target` sigue disponible y borra el feedforward al aceptarse.
 
 Parámetros:
 
@@ -482,7 +604,16 @@ Mapea el vector de base a:
 
 ### Comando de base en `TaskPriorityController`
 
-No publica `TwistStamped`. Escribe las interfaces:
+El solver calcula la velocidad lineal y angular de la base en `world_frame`.
+Antes de enviarla a `body_velocity`, el controlador rota ambas componentes a
+`base_frame` usando la orientación RPY actual del navegador:
+`v_base = R_world_base.transpose() * v_world` y
+`omega_base = R_world_base.transpose() * omega_world`.
+La rotación sigue la misma convención `Rz(yaw) * Ry(pitch) * Rx(roll)` que la
+cinemática. El punto de referencia sigue siendo el origen de la base.
+
+Con `base_command_mode: topic`, publica `geometry_msgs/msg/Twist` en
+`base_command_topic`. Con `base_command_mode: interfaces`, escribe las interfaces:
 
 ```text
 <body_velocity_controller_name>/linear.x
@@ -537,7 +668,7 @@ Publica en un solo mensaje:
 
 - velocidad generalizada completa;
 - nombres de cada elemento de la velocidad generalizada;
-- velocidad 6D de la base en orden `linear.x/y/z`, `angular.x/y/z`;
+- velocidad 6D de la base en ejes de `world_frame`, en orden `linear.x/y/z`, `angular.x/y/z`, antes de convertirla a ejes de la base para `body_velocity`;
 - velocidades del brazo izquierdo y nombres de joints;
 - velocidades del brazo derecho y nombres de joints.
 
@@ -790,7 +921,7 @@ string[] right_joint_names
 float64[] right_arm_velocity
 ```
 
-Salida total final del `TaskPriorityController`. Es el topic cómodo para ver, en un único mensaje, las velocidades que el controlador manda a la base y a los dos brazos.
+Salida final del solver de `TaskPriorityController`. Permite ver en un único mensaje las velocidades de la base y de los dos brazos. La velocidad de base está expresada en `world_frame`; el comando enviado a `body_velocity` se convierte después a `base_frame`.
 
 ### `SolverDiagnostics`
 
@@ -902,3 +1033,37 @@ El paquete depende de:
 ## Cápsulas manuales para evitar autocolisiones
 
 `SelfCollisionAvoidanceTask` utiliza cápsulas definidas en parámetros YAML, sin extraerlas de mallas DAE. La [documentación de cápsulas manuales](docs/self_collision_avoidance.md) describe la configuración, las parejas explícitas, la parada por degeneración y la visualización RViz fuera del bucle de control.
+
+## Feedforward de las tareas de pose
+
+`FramePoseTask` y `EndEffectorPoseTask` reciben `geometry_msgs/msg/TwistStamped` en
+`task_priority/tasks/<id>/feedforward`, junto al tópico de objetivo existente
+`task_priority/tasks/<id>/target`. En el bringup de CIRTESUB, el prefijo público es
+`/cirtesub/controller/task_priority/tasks`.
+
+La velocidad deseada es `vff + K * error`, con orden XYZ lineal y XYZ angular.
+`header.frame_id` selecciona los ejes de la velocidad; vacío utiliza el frame de
+la base. La rotación hacia el mundo se resuelve por TF en el callback del mensaje,
+sin desplazar el punto controlado ni introducir un término por cambio de origen.
+Timestamp cero utiliza la transformación más reciente. Mensajes no finitos o
+referencias no disponibles borran el feedforward. El feedforward no tiene timeout;
+para detenerlo hay que publicar cero o deshabilitar/desactivar/reiniciar el control.
+
+Cada tarea admite estas opciones de configuración, también actualizables mediante
+parámetros ROS durante la ejecución:
+
+```yaml
+tasks.left_pose.auto_update_target_pose: true
+tasks.left_pose.feedforward_velocity_threshold: 0.001
+```
+
+Con actualización automática, la tarea captura su pose al habilitarse y actualiza
+el objetivo en cada ciclo con `norm(vff) > threshold`. Cuando la norma es menor o
+igual, conserva el último objetivo. El umbral es la norma directa de los seis
+componentes, sin ponderación entre velocidades lineales y angulares, y no recorta
+el feedforward. El objetivo actualizado se publica también en `/target`; el
+controlador ignora sus propias publicaciones para evitar realimentar objetivos
+atrasados. `TaskState.feedforward` muestra la velocidad aplicada en el mundo.
+
+Con `auto_update_target_pose: false`, se respeta el objetivo recibido por `/target`
+y solamente se suma la velocidad. Las demás tareas no reciben estos tópicos.

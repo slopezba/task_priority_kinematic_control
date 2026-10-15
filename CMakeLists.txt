@@ -25,6 +25,7 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(sura_msgs REQUIRED)
 find_package(sura_manipulation_actions REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(urdf REQUIRED)
 find_package(visualization_msgs REQUIRED)
@@ -55,12 +56,14 @@ add_library(${core_target} SHARED
   src/geometry/capsule_geometry.cpp
   src/geometry/plane_geometry.cpp
   src/core/capsule_observer.cpp
+  src/core/stabilize_limits_markers.cpp
   src/core/task_manager.cpp
   src/core/task_priority_controller.cpp
   src/core/runtime_node.cpp
   src/kinematics/kdl_kinematics_backend.cpp
   src/kinematics/pinocchio_kinematics_backend.cpp
   src/tasks/task_base.cpp
+  src/tasks/pose_task_common.cpp
   src/tasks/end_effector_position_task.cpp
   src/tasks/end_effector_orientation_task.cpp
   src/tasks/end_effector_pose_task.cpp
@@ -70,6 +73,7 @@ add_library(${core_target} SHARED
   src/tasks/joint_nominal_task.cpp
   src/tasks/joint_trajectory_task.cpp
   src/tasks/joint_limits_task.cpp
+  src/tasks/stabilize_limits_task.cpp
   src/tasks/base_yaw_task.cpp
   src/tasks/self_collision_avoidance_task.cpp
 )
@@ -104,6 +108,7 @@ ament_target_dependencies(${core_target}
   std_srvs
   sura_msgs
   sura_manipulation_actions
+  tf2_ros
   trajectory_msgs
   visualization_msgs
   urdf
@@ -128,10 +133,15 @@ pluginlib_export_plugin_description_file(controller_interface task_priority_kine
 pluginlib_export_plugin_description_file(task_priority_kinematic_control task_priority_kinematic_control_core_plugins.xml)
 
 install(
-  TARGETS ${core_target} task_priority_runtime task_priority_target_markers
+  TARGETS ${core_target}
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  TARGETS task_priority_runtime task_priority_target_markers
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -154,6 +164,8 @@ install(
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
+  Eigen3
+  Threads
   controller_interface
   ament_index_cpp
   control_msgs
@@ -169,6 +181,8 @@ ament_export_dependencies(
   std_msgs
   std_srvs
   sura_msgs
+  sura_manipulation_actions
+  tf2_ros
   trajectory_msgs
   urdf
   visualization_msgs
@@ -178,7 +192,7 @@ ament_export_dependencies(
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
-  foreach(collision_test IN ITEMS capsule_geometry plane_geometry self_collision_avoidance_task capsule_visualization joint_limits_markers)
+  foreach(collision_test IN ITEMS capsule_geometry plane_geometry self_collision_avoidance_task capsule_visualization joint_limits_markers stabilize_limits_markers)
     ament_add_gtest(test_${collision_test} test/test_${collision_test}.cpp)
     if(TARGET test_${collision_test})
       target_link_libraries(test_${collision_test} ${core_target})
@@ -186,6 +200,12 @@ if(BUILD_TESTING)
     endif()
   endforeach()
 
+
+  ament_add_gtest(test_pose_feedforward test/test_pose_feedforward.cpp)
+  if(TARGET test_pose_feedforward)
+    target_link_libraries(test_pose_feedforward ${core_target})
+    ament_target_dependencies(test_pose_feedforward rclcpp tf2_ros)
+  endif()
 
   ament_add_gtest(test_controller_interfaces test/test_controller_interfaces.cpp)
   if(TARGET test_controller_interfaces)
@@ -215,6 +235,12 @@ if(BUILD_TESTING)
   if(TARGET test_joint_limits_task)
     target_link_libraries(test_joint_limits_task ${core_target})
     ament_target_dependencies(test_joint_limits_task rclcpp)
+  endif()
+
+  ament_add_gtest(test_stabilize_limits_task test/test_stabilize_limits_task.cpp)
+  if(TARGET test_stabilize_limits_task)
+    target_link_libraries(test_stabilize_limits_task ${core_target})
+    ament_target_dependencies(test_stabilize_limits_task rclcpp)
   endif()
 
   ament_add_gtest(test_end_effectors_relative_pose_task test/test_end_effectors_relative_pose_task.cpp)

@@ -310,7 +310,15 @@ void TaskPriorityController::declare_task_parameters()
   for (const auto & task_id : task_ids) {
     const std::string prefix = "tasks." + task_id + ".";
     auto_declare_if_missing(this, prefix + "plugin", std::string(""));
+    const bool stabilize_limits = get_node()->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/StabilizeLimitsTask";
     auto_declare_if_missing(this, prefix + "enabled", true);
+    auto_declare_if_missing(this, prefix + "auto_update_target_pose", true);
+    auto_declare_if_missing(this, prefix + "roll_pitch_control", false);
+    auto_declare_if_missing(this, prefix + "allow_roll_pitch", false);
+    auto_declare_if_missing(this, prefix + "feedforward_timeout", 0.0);
+    auto_declare_if_missing(this, prefix + "joint_command_timeout", 0.5);
+    auto_declare_if_missing(this, prefix + "feedforward_velocity_threshold", 0.001);
     auto_declare_if_missing(this, prefix + "priority", 0.0);
     auto_declare_if_missing(this, prefix + "group", std::string("default"));
     auto_declare_if_missing(this, prefix + "frame_id", std::string(""));
@@ -318,21 +326,24 @@ void TaskPriorityController::declare_task_parameters()
     auto_declare_if_missing(this, prefix + "lower_limits", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "upper_limits", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "margin", 0.1);
-    auto_declare_if_missing(this, prefix + "alpha", 0.1);
-    auto_declare_if_missing(this, prefix + "delta", 0.15);
+    auto_declare_if_missing(this, prefix + "alpha", stabilize_limits ? 0.06981317 : 0.1);
+    auto_declare_if_missing(this, prefix + "delta", stabilize_limits ? 0.13962634 : 0.15);
     auto_declare_if_missing(this, prefix + "eps", 1e-4);
     auto_declare_if_missing(this, prefix + "gain_scalar",
-      get_node()->get_parameter(prefix + "plugin").as_string() ==
-      "task_priority_kinematic_control/SelfCollisionAvoidanceTask" ? 1.0 : 0.5);
+      stabilize_limits ? 2.0 :
+      (get_node()->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/SelfCollisionAvoidanceTask" ? 1.0 : 0.5));
     auto_declare_if_missing(this, prefix + "safe_distance", 0.05);
     auto_declare_if_missing(this, prefix + "activation_distance", 0.12);
-    auto_declare_if_missing(this, prefix + "max_repulsive_velocity", 0.08);
+    auto_declare_if_missing(this, prefix + "max_repulsive_velocity", stabilize_limits ? 0.3 : 0.08);
     if (get_node()->get_parameter(prefix + "plugin").as_string() ==
       "task_priority_kinematic_control/SelfCollisionAvoidanceTask") {
       declare_collision_parameters(get_node()->get_node_parameters_interface(), prefix);
     } else if (get_node()->get_parameter(prefix + "plugin").as_string() ==
       "task_priority_kinematic_control/JointLimitsTask") {
       declare_joint_limits_marker_parameters(get_node()->get_node_parameters_interface(), prefix);
+    } else if (stabilize_limits) {
+      declare_stabilize_limits_debug_parameters(get_node()->get_node_parameters_interface(), prefix);
     }
     auto_declare_if_missing(this, prefix + "joint_names", std::vector<std::string>{});
     auto_declare_if_missing(this, prefix + "target", std::vector<double>{});
@@ -450,6 +461,11 @@ TaskPriorityController::state_interface_configuration() const
 controller_interface::CallbackReturn TaskPriorityController::on_configure(
   const rclcpp_lifecycle::State &)
 {
+  {
+    std::scoped_lock lock(task_mutex_);
+    pose_task_io_.set_active(false);
+    manual_task_io_.set_active(false);
+  }
   const auto base_mode = get_node()->get_parameter("base_command_mode").as_string();
   if (base_mode != "interfaces" && base_mode != "topic") {
     RCLCPP_ERROR(get_node()->get_logger(), "base_command_mode must be interfaces or topic");
@@ -825,7 +841,13 @@ rcl_interfaces::msg::SetParametersResult TaskPriorityController::on_parameters_s
       }
 
       std::string message;
-      if (field == "enabled") {
+      if (field == "auto_update_target_pose" || field == "feedforward_velocity_threshold") {
+        if (!task_manager_->set_task_pose_feedforward_option(task_id, field, parameter, message)) {
+          result.successful = false;
+          result.reason = message;
+          return result;
+        }
+      } else if (field == "enabled") {
         if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL ||
           !task_manager_->set_task_enabled(task_id, parameter.as_bool(), message)) {
           result.successful = false; result.reason = "Invalid task enabled parameter"; return result;
@@ -976,7 +998,10 @@ void TaskPriorityController::configure_external_interfaces()
       response->message = "Task priority stopped: all tasks disabled and outputs set to zero";
     });
 
+  pose_task_io_.configure(get_node().get(), task_manager_->tasks(),
+    model_->world_frame(), model_->base_frame());
   task_target_subs_.clear();
+  manual_task_io_.configure(get_node().get(), task_manager_->tasks(), task_mutex_);
   task_joint_target_subs_.clear();
   task_joint_trajectory_subs_.clear();
   task_joint_trajectory_action_servers_.clear();
@@ -1075,9 +1100,10 @@ void TaskPriorityController::configure_external_interfaces()
       continue;
     }
 
-    const auto pose_goal_callback = [this, task_id](const PoseStamped::SharedPtr msg)
+    const auto pose_goal_callback = [this, task_id](const PoseStamped::SharedPtr msg,
+      const rclcpp::MessageInfo & info)
     {
-      if (!msg) {
+      if (!msg || pose_task_io_.is_own_target(task_id, info)) {
         return;
       }
       std::string message;
@@ -1137,7 +1163,10 @@ void TaskPriorityController::publish_task_states(const std::vector<TaskComputati
     if (task_outputs[i].has_frame_pose) {
       state_msg.frame_pose = pose_msg_from_isometry(task_outputs[i].frame_pose);
     }
-    state_msg.feedforward.clear();
+    const auto & feedforward = task_outputs[i].feedforward;
+    if (feedforward.size() > 0) {
+      state_msg.feedforward.assign(feedforward.data(), feedforward.data() + feedforward.size());
+    }
 
     const auto & error = task_outputs[i].error;
     state_msg.error.resize(static_cast<size_t>(error.size()), 0.0);
@@ -1224,6 +1253,11 @@ controller_interface::CallbackReturn TaskPriorityController::on_activate(
     base_command_rt_pub_ = std::make_shared<realtime_tools::RealtimePublisher<geometry_msgs::msg::Twist>>(
       base_command_pub_);
   }
+  {
+    std::scoped_lock lock(task_mutex_);
+    pose_task_io_.set_active(true);
+    manual_task_io_.set_active(true);
+  }
   reset_commands();
   publish_zero_controller_output(get_node()->now());
   std_msgs::msg::Bool active;
@@ -1240,6 +1274,11 @@ controller_interface::CallbackReturn TaskPriorityController::on_deactivate(
   const rclcpp_lifecycle::State &)
 {
   stop_task_trajectory_goals("Task priority controller deactivated");
+  {
+    std::scoped_lock lock(task_mutex_);
+    pose_task_io_.set_active(false);
+    manual_task_io_.set_active(false);
+  }
   if (active_pub_) {active_pub_->publish(std_msgs::msg::Bool{});}
   reset_commands();
   // Join the publishing thread before the final zero, so a queued command
@@ -1254,6 +1293,11 @@ controller_interface::CallbackReturn TaskPriorityController::on_cleanup(
   const rclcpp_lifecycle::State &)
 {
   stop_task_trajectory_goals("Task priority controller cleaned up");
+  {
+    std::scoped_lock lock(task_mutex_);
+    pose_task_io_.set_active(false);
+    manual_task_io_.set_active(false);
+  }
   if (active_pub_) {active_pub_->publish(std_msgs::msg::Bool{});}
   reset_commands();
   // Join the publishing thread before the final zero, so a queued command
@@ -1269,6 +1313,11 @@ controller_interface::CallbackReturn TaskPriorityController::on_shutdown(
   const rclcpp_lifecycle::State &)
 {
   stop_task_trajectory_goals("Task priority controller shut down");
+  {
+    std::scoped_lock lock(task_mutex_);
+    pose_task_io_.set_active(false);
+    manual_task_io_.set_active(false);
+  }
   if (active_pub_) {active_pub_->publish(std_msgs::msg::Bool{});}
   reset_commands();
   // Join the publishing thread before the final zero, so a queued command
@@ -1505,16 +1554,27 @@ controller_interface::return_type TaskPriorityController::update(
     task_manager_->finalize_command(command, time.nanoseconds());
     publish_hierarchy_state(time);
     publish_task_states(task_outputs);
+    pose_task_io_.publish_targets(task_manager_->tasks(), task_outputs, time, model_->world_frame());
   }
 
-  Eigen::Matrix<double, 6, 1> base_command = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> base_command_world = Eigen::Matrix<double, 6, 1>::Zero();
   for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(active_base_dofs_.size()) &&
        i < command.generalized_velocity.size(); ++i) {
     const int dof = active_base_dofs_[static_cast<size_t>(i)];
     if (dof >= 0 && dof < 6) {
-      base_command(dof) = command.generalized_velocity(i);
+      base_command_world(dof) = command.generalized_velocity(i);
     }
   }
+
+  // The solver uses world axes; body_velocity expects axes of the base frame.
+  // Both velocities refer to the base origin, so only their axes are rotated.
+  const Eigen::Matrix3d world_to_base_rotation =
+    (Eigen::AngleAxisd(state_.base_rpy.z(), Eigen::Vector3d::UnitZ()) *
+    Eigen::AngleAxisd(state_.base_rpy.y(), Eigen::Vector3d::UnitY()) *
+    Eigen::AngleAxisd(state_.base_rpy.x(), Eigen::Vector3d::UnitX())).toRotationMatrix().transpose();
+  Eigen::Matrix<double, 6, 1> base_command;
+  base_command.head<3>() = world_to_base_rotation * base_command_world.head<3>();
+  base_command.tail<3>() = world_to_base_rotation * base_command_world.tail<3>();
 
   if (base_command_via_topic_) {
     publish_base_command(base_command);

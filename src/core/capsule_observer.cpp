@@ -161,8 +161,21 @@ CapsuleObserver::CapsuleObserver(const std::vector<std::shared_ptr<TaskBase>> & 
       rate = std::max(rate, limits->limits_marker_publish_rate());
       limits_entries_.push_back(std::move(entry));
     }
+    if (auto tilt = std::dynamic_pointer_cast<StabilizeLimitsTask>(task)) {
+      TiltLimitsEntry entry;
+      entry.task = tilt;
+      entry.renderer = std::make_unique<StabilizeLimitsMarkerRenderer>(
+        tilt->base_frame(), tilt->id(), tilt->publish_marker_rate());
+      entry.publish_period = std::chrono::nanoseconds(
+        static_cast<int64_t>(1e9 / tilt->publish_marker_rate()));
+      entry.next_publish = std::chrono::steady_clock::now();
+      entry.publisher = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+        host_name + "/" + task->id() + "/limits_markers", rclcpp::QoS(1).reliable().durability_volatile());
+      rate = std::max(rate, tilt->publish_marker_rate());
+      tilt_limits_entries_.push_back(std::move(entry));
+    }
   }
-  if (entries_.empty() && limits_entries_.empty()) {return;}
+  if (entries_.empty() && limits_entries_.empty() && tilt_limits_entries_.empty()) {return;}
   rclcpp::ExecutorOptions executor_options;
   executor_options.context = context;
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>(executor_options);
@@ -193,6 +206,12 @@ CapsuleObserver::~CapsuleObserver()
         entry.publisher->publish(delete_joint_limits_markers(
           entry.task->joint_names(), entry.task->base_frame(), entry.task->id()));
       } catch (const std::exception &) {}
+    }
+  }
+  for (auto & entry : tilt_limits_entries_) {
+    if (entry.visible && rclcpp::ok(node_->get_node_base_interface()->get_context())) {
+      try {entry.publisher->publish(entry.renderer->clear());}
+      catch (const std::exception &) {}
     }
   }
 }
@@ -250,6 +269,27 @@ void CapsuleObserver::tick()
       entry.task->joint_names(), *entry.snapshot, entry.task->base_frame(), entry.task->id()));
     entry.last_publish = now; entry.visible = true;
   }
+  for (auto & entry : tilt_limits_entries_) {
+    if (const auto * next = entry.task->consume_snapshot()) {entry.snapshot = next;}
+    const bool display = entry.task->debug() && entry.snapshot &&
+      entry.snapshot->visualization_state == entry.task->marker_visibility_state() &&
+      entry.snapshot->visualization_enabled && entry.snapshot->valid &&
+      now - entry.snapshot->captured <= std::chrono::duration<double>(
+        std::max(1.0, 2.0 / entry.task->publish_marker_rate()));
+    if (!display) {
+      if (entry.visible) {
+        entry.publisher->publish(entry.renderer->clear());
+        entry.visible = false;
+      }
+      continue;
+    }
+    if (now < entry.next_publish) {continue;}
+    entry.publisher->publish(entry.renderer->update(*entry.snapshot));
+    // Advance a fixed schedule, skipping missed periods. Timer jitter must not
+    // halve a 2 Hz stream by repeatedly missing a relative 500 ms threshold.
+    entry.next_publish += entry.publish_period * (1 + (now - entry.next_publish) / entry.publish_period);
+    entry.visible = true;
+  }
 }
 
 void declare_joint_limits_marker_parameters(
@@ -266,6 +306,20 @@ void declare_joint_limits_marker_parameters(
   }
 }
 
+void declare_stabilize_limits_debug_parameters(
+  const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & parameters,
+  const std::string & prefix)
+{
+  if (!parameters->has_parameter(prefix + "debug")) {
+    parameters->declare_parameter(prefix + "debug", rclcpp::ParameterValue(false),
+      rcl_interfaces::msg::ParameterDescriptor{});
+  }
+  if (!parameters->has_parameter(prefix + "publish_marker_rate")) {
+    parameters->declare_parameter(prefix + "publish_marker_rate", rclcpp::ParameterValue(2.0),
+      rcl_interfaces::msg::ParameterDescriptor{});
+  }
+}
+
 rcl_interfaces::msg::SetParametersResult validate_joint_limits_marker_parameter_updates(
   const std::vector<rclcpp::Parameter> & parameters,
   const std::vector<std::shared_ptr<TaskBase>> & tasks, bool apply_visualization)
@@ -274,14 +328,17 @@ rcl_interfaces::msg::SetParametersResult validate_joint_limits_marker_parameter_
   result.successful = true;
   for (const auto & task : tasks) {
     const auto limits = std::dynamic_pointer_cast<JointLimitsTask>(task);
-    if (!limits) {continue;}
+    const auto tilt = std::dynamic_pointer_cast<StabilizeLimitsTask>(task);
+    if (!limits && !tilt) {continue;}
     const std::string prefix = "tasks." + task->id() + ".";
+    const std::string toggle = tilt ? "debug" : "publish_limits_marker";
+    const std::string rate = tilt ? "publish_marker_rate" : "limits_marker_publish_rate";
     for (const auto & parameter : parameters) {
-      if (parameter.get_name() == prefix + "publish_limits_marker" &&
+      if (parameter.get_name() == prefix + toggle &&
         parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
-        result.successful = false; result.reason = "publish_limits_marker requires bool"; return result;
+        result.successful = false; result.reason = toggle + " requires bool"; return result;
       }
-      if (parameter.get_name() == prefix + "limits_marker_publish_rate") {
+      if (parameter.get_name() == prefix + rate) {
         result.successful = false;
         result.reason = parameter.get_name() + " requires reloading the controller";
         return result;
@@ -292,10 +349,13 @@ rcl_interfaces::msg::SetParametersResult validate_joint_limits_marker_parameter_
   if (apply_visualization) {
     for (const auto & task : tasks) {
       const auto limits = std::dynamic_pointer_cast<JointLimitsTask>(task);
-      if (!limits) {continue;}
+      const auto tilt = std::dynamic_pointer_cast<StabilizeLimitsTask>(task);
+      if (!limits && !tilt) {continue;}
+      const std::string toggle = tilt ? "debug" : "publish_limits_marker";
       for (const auto & parameter : parameters) {
-        if (parameter.get_name() == "tasks." + task->id() + ".publish_limits_marker") {
-          limits->set_publish_limits_marker(parameter.as_bool());
+        if (parameter.get_name() == "tasks." + task->id() + "." + toggle) {
+          if (limits) {limits->set_publish_limits_marker(parameter.as_bool());}
+          else {tilt->set_debug(parameter.as_bool());}
         }
       }
     }

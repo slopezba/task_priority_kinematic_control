@@ -1,6 +1,7 @@
 #pragma once
 #include "task_priority_kinematic_control/tasks/self_collision_avoidance_task.hpp"
 #include "task_priority_kinematic_control/tasks/joint_limits_task.hpp"
+#include "task_priority_kinematic_control/tasks/stabilize_limits_task.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -22,7 +23,25 @@ visualization_msgs::msg::MarkerArray joint_limits_markers(
 visualization_msgs::msg::MarkerArray delete_joint_limits_markers(
   const std::vector<std::string> & joint_names, const std::string & frame, const std::string & task_id);
 
-// One dedicated non-control executor/timer for collision and joint-limit tasks in a host.
+// Allocate message storage once; updates reuse marker, string and point buffers.
+class StabilizeLimitsMarkerRenderer
+{
+public:
+  StabilizeLimitsMarkerRenderer(const std::string & frame, const std::string & task_id,
+    double publish_rate = 2.0);
+  const visualization_msgs::msg::MarkerArray & update(const StabilizeLimitsSnapshot & snapshot);
+  const visualization_msgs::msg::MarkerArray & clear();
+private:
+  void prepare_geometry(const StabilizeLimitsSnapshot & snapshot);
+  visualization_msgs::msg::MarkerArray markers_;
+  Eigen::Vector2d lower_ = Eigen::Vector2d::Zero();
+  Eigen::Vector2d upper_ = Eigen::Vector2d::Zero();
+  double alpha_ = 0;
+  double delta_ = 0;
+  bool geometry_ready_ = false;
+};
+
+// One dedicated non-control executor/timer for collision and limit tasks in a host.
 class CapsuleObserver
 {
 public:
@@ -50,9 +69,20 @@ private:
     bool visible = false;
     std::chrono::steady_clock::time_point last_publish{};
   };
+  struct TiltLimitsEntry
+  {
+    std::shared_ptr<StabilizeLimitsTask> task;
+    std::unique_ptr<StabilizeLimitsMarkerRenderer> renderer;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr publisher;
+    const StabilizeLimitsSnapshot * snapshot = nullptr;
+    bool visible = false;
+    std::chrono::steady_clock::time_point next_publish{};
+    std::chrono::steady_clock::duration publish_period{};
+  };
   void tick();
   std::vector<Entry> entries_;
   std::vector<LimitsEntry> limits_entries_;
+  std::vector<TiltLimitsEntry> tilt_limits_entries_;
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   rclcpp::TimerBase::SharedPtr timer_;
@@ -64,6 +94,9 @@ void declare_collision_parameters(
   const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & parameters,
   const std::string & prefix);
 void declare_joint_limits_marker_parameters(
+  const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & parameters,
+  const std::string & prefix);
+void declare_stabilize_limits_debug_parameters(
   const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & parameters,
   const std::string & prefix);
 // Rejects topology changes and applies visualization toggles atomically. The observer

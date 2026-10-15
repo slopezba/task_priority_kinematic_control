@@ -157,7 +157,15 @@ void RuntimeNode::declare_parameters()
   for (const auto & task_id : this->get_parameter("task_ids").as_string_array()) {
     const std::string prefix = "tasks." + task_id + ".";
     declare_if_missing<std::string>(*this, prefix + "plugin", "");
+    const bool stabilize_limits = this->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/StabilizeLimitsTask";
     declare_if_missing<bool>(*this, prefix + "enabled", true);
+    declare_if_missing<bool>(*this, prefix + "auto_update_target_pose", true);
+    declare_if_missing<bool>(*this, prefix + "roll_pitch_control", false);
+    declare_if_missing<bool>(*this, prefix + "allow_roll_pitch", false);
+    declare_if_missing<double>(*this, prefix + "feedforward_timeout", 0.0);
+    declare_if_missing<double>(*this, prefix + "joint_command_timeout", 0.5);
+    declare_if_missing<double>(*this, prefix + "feedforward_velocity_threshold", 0.001);
     declare_if_missing<double>(*this, prefix + "priority", 0.0);
     declare_if_missing<std::string>(*this, prefix + "group", "default");
     if (this->get_parameter(prefix + "plugin").as_string() ==
@@ -166,18 +174,24 @@ void RuntimeNode::declare_parameters()
     } else if (this->get_parameter(prefix + "plugin").as_string() ==
       "task_priority_kinematic_control/JointLimitsTask") {
       declare_joint_limits_marker_parameters(get_node_parameters_interface(), prefix);
+    } else if (stabilize_limits) {
+      declare_stabilize_limits_debug_parameters(get_node_parameters_interface(), prefix);
     }
     declare_if_missing<std::string>(*this, prefix + "frame_id", "");
     declare_if_missing<std::vector<double>>(*this, prefix + "gain", {});
     declare_if_missing<std::vector<double>>(*this, prefix + "lower_limits", {});
     declare_if_missing<std::vector<double>>(*this, prefix + "upper_limits", {});
     declare_if_missing<double>(*this, prefix + "margin", 0.1);
-    declare_if_missing<double>(*this, prefix + "alpha", 0.1);
-    declare_if_missing<double>(*this, prefix + "delta", 0.15);
+    declare_if_missing<double>(*this, prefix + "alpha", stabilize_limits ? 0.06981317 : 0.1);
+    declare_if_missing<double>(*this, prefix + "delta", stabilize_limits ? 0.13962634 : 0.15);
+    if (stabilize_limits) {
+      declare_if_missing<double>(*this, prefix + "max_repulsive_velocity", 0.3);
+    }
     declare_if_missing<double>(*this, prefix + "eps", 1e-4);
     declare_if_missing<double>(*this, prefix + "gain_scalar",
-      this->get_parameter(prefix + "plugin").as_string() ==
-      "task_priority_kinematic_control/SelfCollisionAvoidanceTask" ? 1.0 : 0.5);
+      stabilize_limits ? 2.0 :
+      (this->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/SelfCollisionAvoidanceTask" ? 1.0 : 0.5));
     declare_if_missing<std::vector<std::string>>(*this, prefix + "joint_names", {});
     declare_if_missing<std::vector<double>>(*this, prefix + "target", {});
     declare_if_missing<std::vector<int64_t>>(*this, prefix + "activation", {});
@@ -341,6 +355,10 @@ void RuntimeNode::configure_solver()
 
 void RuntimeNode::configure_publishers()
 {
+  for (const auto & task : task_manager_->tasks()) {
+    task_state_pubs_[task->id()] = create_publisher<msg::TaskState>(
+      "task_priority/tasks/" + task->id() + "/state", rclcpp::SystemDefaultsQoS());
+  }
   base_command_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>(
     this->get_parameter("base_command_topic").as_string(), 10);
   left_arm_command_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
@@ -353,6 +371,8 @@ void RuntimeNode::configure_publishers()
 
 void RuntimeNode::configure_subscribers()
 {
+  pose_task_io_.configure(this, task_manager_->tasks(), model_->world_frame(), model_->base_frame());
+  pose_task_io_.set_active(true);
   navigator_sub_ = this->create_subscription<sura_msgs::msg::Navigator>(
     this->get_parameter("navigator_topic").as_string(),
     10,
@@ -363,6 +383,8 @@ void RuntimeNode::configure_subscribers()
     std::bind(&RuntimeNode::joint_state_callback, this, std::placeholders::_1));
 
   task_target_subs_.clear();
+  manual_task_io_.configure(this, task_manager_->tasks(), task_mutex_);
+  manual_task_io_.set_active(true);
   task_joint_target_subs_.clear();
   task_joint_trajectory_subs_.clear();
   task_joint_trajectory_action_servers_.clear();
@@ -380,6 +402,7 @@ void RuntimeNode::configure_subscribers()
             }
 
             std::string message;
+            std::scoped_lock lock(task_mutex_);
             if (!task_manager_->set_task_joint_target(task_id, msg->data, message)) {
               RCLCPP_WARN(
                 this->get_logger(),
@@ -457,8 +480,9 @@ void RuntimeNode::configure_subscribers()
     task_target_subs_[task_id] = this->create_subscription<geometry_msgs::msg::PoseStamped>(
       "task_priority/tasks/" + task_id + "/target",
       10,
-      [this, task_id](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-        if (!msg) {
+      [this, task_id](const geometry_msgs::msg::PoseStamped::SharedPtr msg,
+        const rclcpp::MessageInfo & info) {
+        if (!msg || pose_task_io_.is_own_target(task_id, info)) {
           return;
         }
 
@@ -483,6 +507,7 @@ void RuntimeNode::configure_services()
     [this](
       const std::shared_ptr<srv::SetTaskEnabled::Request> request,
       std::shared_ptr<srv::SetTaskEnabled::Response> response) {
+      std::scoped_lock lock(task_mutex_);
       response->success = task_manager_->set_task_enabled(request->task_id, request->enabled, response->message);
     });
   set_task_joint_activation_srv_ = this->create_service<srv::SetTaskJointActivation>(
@@ -490,6 +515,7 @@ void RuntimeNode::configure_services()
     [this](
       const std::shared_ptr<srv::SetTaskJointActivation::Request> request,
       std::shared_ptr<srv::SetTaskJointActivation::Response> response) {
+      std::scoped_lock lock(task_mutex_);
       response->success = task_manager_->set_task_joint_activation(
         request->task_id,
         request->joint_activation,
@@ -500,6 +526,7 @@ void RuntimeNode::configure_services()
     [this](
       const std::shared_ptr<srv::ReorderTasks::Request> request,
       std::shared_ptr<srv::ReorderTasks::Response> response) {
+      std::scoped_lock lock(task_mutex_);
       response->success = task_manager_->reorder_tasks(request->ordered_task_ids, response->message);
     });
   list_tasks_srv_ = this->create_service<srv::ListTasks>(
@@ -507,6 +534,7 @@ void RuntimeNode::configure_services()
     [this](
       const std::shared_ptr<srv::ListTasks::Request>,
       std::shared_ptr<srv::ListTasks::Response> response) {
+      std::scoped_lock lock(task_mutex_);
       response->tasks = task_manager_->get_task_statuses();
       response->backend_name = backend_->name();
       response->solver_method = solver_method_name(parse_solver_method(this->get_parameter("solver_method").as_string()));
@@ -518,6 +546,7 @@ void RuntimeNode::configure_services()
     [this](
       const std::shared_ptr<srv::SwitchBackend::Request> request,
       std::shared_ptr<srv::SwitchBackend::Response> response) {
+      std::scoped_lock lock(task_mutex_);
       try {
         auto candidate = backend_loader_.createSharedInstance(request->backend_name);
         candidate->configure(*model_, resolve_robot_description(), get_logger());
@@ -550,6 +579,7 @@ void RuntimeNode::configure_services()
     [this](
       const std::shared_ptr<std_srvs::srv::Trigger::Request>,
       std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+      std::scoped_lock lock(task_mutex_);
       task_manager_->reset();
       response->success = true;
       response->message = "Solver state reset";
@@ -681,6 +711,7 @@ void RuntimeNode::joint_state_callback(const sensor_msgs::msg::JointState::Share
 
 void RuntimeNode::timer_callback()
 {
+  std::scoped_lock lock(task_mutex_);
   if (!state_.navigation_valid || !state_.joints_valid) {
     publish_status();
     return;
@@ -688,6 +719,38 @@ void RuntimeNode::timer_callback()
 
   backend_->update(state_);
   const auto & task_outputs = task_manager_->update_all_into(state_, *backend_);
+  pose_task_io_.publish_targets(task_manager_->tasks(), task_outputs, now(), model_->world_frame());
+  const auto tasks = task_manager_->tasks();
+  for (size_t i = 0; i < tasks.size() && i < task_outputs.size(); ++i) {
+    const auto & output = task_outputs[i];
+    msg::TaskState message;
+    message.id = tasks[i]->id();
+    message.type = tasks[i]->plugin_name();
+    message.enabled = tasks[i]->enabled();
+    message.active = output.active;
+    message.has_frame_pose = output.has_frame_pose;
+    message.frame_id = output.frame_id;
+    if (output.has_frame_pose) {
+      const auto & p = output.frame_pose.translation();
+      const Eigen::Quaterniond q(output.frame_pose.rotation());
+      message.frame_pose.position.x = p.x();
+      message.frame_pose.position.y = p.y();
+      message.frame_pose.position.z = p.z();
+      message.frame_pose.orientation.x = q.x();
+      message.frame_pose.orientation.y = q.y();
+      message.frame_pose.orientation.z = q.z();
+      message.frame_pose.orientation.w = q.w();
+    }
+    const auto copy = [](const Eigen::VectorXd & values, std::vector<double> & target) {
+      target.resize(static_cast<size_t>(values.size()));
+      for (Eigen::Index j = 0; j < values.size(); ++j) {target[static_cast<size_t>(j)] = values(j);}
+    };
+    copy(output.feedforward, message.feedforward);
+    copy(output.error, message.error);
+    copy(output.desired_velocity, message.velocity);
+    message.target = tasks[i]->current_target();
+    task_state_pubs_.at(tasks[i]->id())->publish(message);
+  }
   WholeBodyCommand command = solver_.solve(task_outputs);
   task_manager_->finalize_command(command, this->now().nanoseconds());
   command.base_velocity = command.generalized_velocity.head(model_->base_dofs());
@@ -795,7 +858,13 @@ rcl_interfaces::msg::SetParametersResult RuntimeNode::on_parameters_set(
       }
 
       std::string message;
-      if (field == "enabled") {
+      if (field == "auto_update_target_pose" || field == "feedforward_velocity_threshold") {
+        if (!task_manager_->set_task_pose_feedforward_option(task_id, field, parameter, message)) {
+          result.successful = false;
+          result.reason = message;
+          return result;
+        }
+      } else if (field == "enabled") {
         if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL ||
           !task_manager_->set_task_enabled(task_id, parameter.as_bool(), message)) {
           result.successful = false; result.reason = "Invalid task enabled parameter"; return result;

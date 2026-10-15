@@ -1,12 +1,14 @@
 #pragma once
 
+#include "task_priority_kinematic_control/tasks/pose_task_common.hpp"
+
 #include "task_priority_kinematic_control/tasks/end_effector_orientation_task.hpp"
 #include "task_priority_kinematic_control/tasks/end_effector_position_task.hpp"
 
 namespace task_priority_kinematic_control
 {
 
-class EndEffectorPoseTask : public TaskBaseCommon
+class EndEffectorPoseTask : public PoseTaskCommon
 {
 public:
   void configure(

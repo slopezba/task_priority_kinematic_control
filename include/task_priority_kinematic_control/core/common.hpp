@@ -1,5 +1,6 @@
 #pragma once
 
+#include <geometry_msgs/msg/pose.hpp>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
@@ -46,6 +47,9 @@ struct TaskComputation
   Eigen::MatrixXd jacobian;
   Eigen::VectorXd desired_velocity;
   Eigen::VectorXd error;
+  Eigen::VectorXd feedforward;
+  bool has_updated_target = false;
+  geometry_msgs::msg::Pose updated_target;
   Eigen::Isometry3d frame_pose = Eigen::Isometry3d::Identity();
   bool active = false;
   bool stop_arm_motion = false;

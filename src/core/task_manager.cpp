@@ -1,5 +1,7 @@
 #include "task_priority_kinematic_control/core/task_manager.hpp"
 
+#include "task_priority_kinematic_control/tasks/pose_task_common.hpp"
+
 #include <algorithm>
 #include <rclcpp/logging.hpp>
 
@@ -73,6 +75,21 @@ void TaskManager::finalize_command(WholeBodyCommand & command, int64_t timestamp
     command.generalized_velocity.segment(model->right_offset(), model->right_arm_dofs()).setZero();
   }
   for (const auto & task : tasks_) {task->observe_command(command, timestamp_ns);}
+}
+
+bool TaskManager::set_task_pose_feedforward_option(const std::string & task_id,
+  const std::string & field, const rclcpp::Parameter & parameter, std::string & message)
+{
+  for (const auto & task : tasks_) {
+    if (task->id() != task_id) {continue;}
+    if (auto pose = std::dynamic_pointer_cast<PoseTaskCommon>(task)) {
+      return pose->set_feedforward_option(field, parameter, message);
+    }
+    message = "Task does not accept pose feedforward options";
+    return false;
+  }
+  message = "Task not found";
+  return false;
 }
 
 bool TaskManager::set_task_enabled(const std::string & task_id, bool enabled, std::string & message)

@@ -23,6 +23,7 @@
   <depend>sensor_msgs</depend>
   <depend>sura_msgs</depend>
   <depend>sura_manipulation_actions</depend>
+  <depend>tf2_ros</depend>
   <depend>trajectory_msgs</depend>
   <depend>pluginlib</depend>
   <depend>realtime_tools</depend>

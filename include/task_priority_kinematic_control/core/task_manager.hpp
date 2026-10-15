@@ -36,6 +36,8 @@ public:
     const WholeBodyState & state, const KinematicsBackend & backend);
   void finalize_command(WholeBodyCommand & command, int64_t timestamp_ns);
 
+  bool set_task_pose_feedforward_option(const std::string & task_id, const std::string & field,
+    const rclcpp::Parameter & parameter, std::string & message);
   bool set_task_enabled(const std::string & task_id, bool enabled, std::string & message);
   bool set_task_pose_goal(
     const std::string & task_id,

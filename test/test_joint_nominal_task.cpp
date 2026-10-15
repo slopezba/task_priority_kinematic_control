@@ -1,6 +1,8 @@
 #include "task_priority_kinematic_control/tasks/joint_nominal_task.hpp"
 
 #include <gtest/gtest.h>
+#include <thread>
+#include <limits>
 
 namespace task_priority_kinematic_control
 {
@@ -104,6 +106,49 @@ TEST(JointNominalTask, RuntimeActivationCanDisableAllJointRows)
 
   EXPECT_FALSE(output.active);
   EXPECT_EQ(output.status_message, "no_active_joints");
+}
+
+TEST(JointNominalTask, JointCommandIsAtomicOrderedAndRespectsActivationAndLifecycle)
+{
+  auto model = std::make_shared<WholeBodyModel>();
+  model->configure("world", "base", "left", "right", {"joint_a", "joint_b", "joint_c"}, {}, {});
+  JointNominalTask task;
+  auto parameters = task_parameters();
+  parameters["joint_command_timeout"] = rclcpp::Parameter("joint_command_timeout", 0.01);
+  task.configure("nominal", "plugin", parameters, TaskContext{model});
+  sensor_msgs::msg::JointState command;
+  command.name = {"joint_c", "joint_a", "joint_b"};
+  command.position = {3,1,2};
+  command.velocity = {0.3,0.1,0.2};
+  std::string message;
+  ASSERT_TRUE(task.set_joint_command(command, message));
+  WholeBodyState state;
+  state.joint_positions = Eigen::Vector3d(1,2,3);
+  MockBackend backend;
+  auto output = task.update(state, backend);
+  ASSERT_EQ(output.desired_velocity.size(), 2);
+  EXPECT_DOUBLE_EQ(output.desired_velocity(0), 0.1);
+  EXPECT_DOUBLE_EQ(output.desired_velocity(1), 0.3);
+  command.position[0] = 8;
+  command.velocity[1] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(task.set_joint_command(command, message));
+  EXPECT_EQ(task.current_target(), (std::vector<double>{1,2,3}));
+  EXPECT_TRUE(task.update(state, backend).feedforward.isZero());
+  command.position[0] = 3; command.velocity[1] = 0.1;
+  ASSERT_TRUE(task.set_joint_command(command, message));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_TRUE(task.update(state, backend).feedforward.isZero());
+  ASSERT_TRUE(task.set_joint_command(command, message));
+  task.set_enabled(false); task.set_enabled(true);
+  EXPECT_TRUE(task.update(state, backend).feedforward.isZero());
+  ASSERT_TRUE(task.set_joint_command(command, message));
+  task.reset();
+  EXPECT_TRUE(task.update(state, backend).feedforward.isZero());
+  command.name = {"joint_a", "joint_a", "joint_c"};
+  EXPECT_FALSE(task.set_joint_command(command, message));
+  command.name = {"joint_a", "joint_b", "joint_c"};
+  command.velocity.pop_back();
+  EXPECT_FALSE(task.set_joint_command(command, message));
 }
 
 }  // namespace task_priority_kinematic_control

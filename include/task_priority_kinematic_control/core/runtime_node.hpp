@@ -1,5 +1,8 @@
 #pragma once
 
+#include "task_priority_kinematic_control/core/pose_task_io.hpp"
+#include "task_priority_kinematic_control/core/manual_task_io.hpp"
+
 #include "task_priority_kinematic_control/core/hierarchy_solver.hpp"
 #include "task_priority_kinematic_control/core/task_manager.hpp"
 #include "task_priority_kinematic_control/core/capsule_observer.hpp"
@@ -13,6 +16,8 @@
 #include "task_priority_kinematic_control/srv/set_task_enabled.hpp"
 #include "task_priority_kinematic_control/srv/set_task_joint_activation.hpp"
 #include "task_priority_kinematic_control/srv/switch_backend.hpp"
+
+#include "task_priority_kinematic_control/msg/task_state.hpp"
 
 #include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -74,8 +79,11 @@ private:
 
   std::shared_ptr<WholeBodyModel> model_;
   WholeBodyState state_;
+  std::mutex task_mutex_;
   std::unique_ptr<TaskManager> task_manager_;
   HierarchySolver solver_;
+  PoseTaskIO pose_task_io_;
+  ManualTaskIO manual_task_io_;
   std::unique_ptr<CapsuleObserver> capsule_observer_;
 
   pluginlib::ClassLoader<KinematicsBackend> backend_loader_;
@@ -97,6 +105,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr base_command_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr left_arm_command_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr right_arm_command_pub_;
+  std::map<std::string, rclcpp::Publisher<msg::TaskState>::SharedPtr> task_state_pubs_;
   rclcpp::Publisher<msg::HierarchyState>::SharedPtr hierarchy_pub_;
   rclcpp::Publisher<msg::SolverDiagnostics>::SharedPtr diagnostics_pub_;
 

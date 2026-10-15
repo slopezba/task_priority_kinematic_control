@@ -1,5 +1,8 @@
 #pragma once
 
+#include "task_priority_kinematic_control/core/pose_task_io.hpp"
+#include "task_priority_kinematic_control/core/manual_task_io.hpp"
+
 #include "task_priority_kinematic_control/core/hierarchy_solver.hpp"
 #include "task_priority_kinematic_control/core/task_manager.hpp"
 #include "task_priority_kinematic_control/core/capsule_observer.hpp"
@@ -146,10 +149,13 @@ private:
   rcl_interfaces::msg::SetParametersResult on_parameters_set(
     const std::vector<rclcpp::Parameter> & parameters);
 
+  std::mutex task_mutex_;
   std::shared_ptr<WholeBodyModel> model_;
   WholeBodyState state_;
   std::unique_ptr<TaskManager> task_manager_;
   HierarchySolver solver_;
+  PoseTaskIO pose_task_io_;
+  ManualTaskIO manual_task_io_;
   std::unique_ptr<CapsuleObserver> capsule_observer_;
 
   std::unique_ptr<pluginlib::ClassLoader<KinematicsBackend>> backend_loader_;
@@ -191,7 +197,6 @@ private:
   std::mutex runtime_tuning_mutex_;
   std::deque<std::shared_ptr<RuntimeTuningCommand>> pending_runtime_tuning_;
   std::atomic_bool parameter_update_pending_{false};
-  std::mutex task_mutex_;
   bool trajectory_execution_ready_{false};
   std::map<std::string, TrajectoryActionSlot> trajectory_action_slots_;
   rclcpp::TimerBase::SharedPtr trajectory_result_timer_;

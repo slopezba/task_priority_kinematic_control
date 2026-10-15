@@ -94,6 +94,8 @@ task_priority_controller:
 
     tasks.left_pose.plugin: task_priority_kinematic_control/EndEffectorPoseTask
     tasks.left_pose.enabled: true
+    tasks.left_pose.auto_update_target_pose: true
+    tasks.left_pose.feedforward_velocity_threshold: 0.001
     tasks.left_pose.priority: 1.0
     tasks.left_pose.group: left
     tasks.left_pose.frame_id: cirtesub/alpha_left/ee_base_link
@@ -101,6 +103,8 @@ task_priority_controller:
 
     tasks.right_pose.plugin: task_priority_kinematic_control/EndEffectorPoseTask
     tasks.right_pose.enabled: true
+    tasks.right_pose.auto_update_target_pose: true
+    tasks.right_pose.feedforward_velocity_threshold: 0.001
     tasks.right_pose.priority: 2.0
     tasks.right_pose.group: right
     tasks.right_pose.frame_id: cirtesub/alpha_right/ee_base_link

@@ -26,6 +26,7 @@ void EndEffectorPoseTask::configure(
   const TaskContext & context)
 {
   configure_common(id, plugin_name, parameters, context);
+  configure_pose_feedforward(parameters);
   frame_id_ = get_string_param(parameters, "frame_id", context.model->left_tip_frame());
   const auto gains = get_double_array_param(parameters, "gain", {1.0, 1.0, 1.0, 1.0, 1.0, 1.0});
   for (size_t i = 0; i < 6 && i < gains.size(); ++i) {
@@ -45,9 +46,15 @@ TaskComputation EndEffectorPoseTask::update(
   }
 
   const FrameState frame = backend.get_frame_state(frame_id_);
+  if (!frame.pose.matrix().allFinite()) {
+    computation.active = false;
+    computation.status_message = "frame pose unavailable";
+    return computation;
+  }
   computation.has_frame_pose = true;
   computation.frame_id = frame_id_;
   computation.frame_pose = frame.pose;
+  update_pose_target(frame.pose, computation);
   Eigen::Matrix<double, 6, 1> error = Eigen::Matrix<double, 6, 1>::Zero();
   const Eigen::Vector3d target_pos = has_pose_goal_ ?
     Eigen::Vector3d(
@@ -68,7 +75,7 @@ TaskComputation EndEffectorPoseTask::update(
   }
 
   computation.error = error;
-  computation.desired_velocity = gains_.asDiagonal() * error;
+  computation.desired_velocity = computation.feedforward + gains_.asDiagonal() * error;
   computation.jacobian = frame.jacobian;
   computation.status_message = "tracking";
   return computation;
