@@ -24,6 +24,20 @@ task_priority_controller:
       - cirtesub/alpha_right/axis_d
       - cirtesub/alpha_right/axis_e
     active_base_dofs: [0, 1, 2, 3, 4, 5]
+    # Offline STPIK gate for Cartesian Pose execution; runtime task gains stay unchanged.
+    stpik.dt: 0.01
+    # Cartesian path/goal tolerances come exclusively from the action goal.
+    stpik.stall_window: 1.0
+    stpik.min_position_progress: 0.0001
+    stpik.min_orientation_progress: 0.001
+    stpik.numerical_tolerance: 1.0e-6
+    stpik.singular_value_tolerance: 1.0e-6
+    stpik.wall_timeout: 30.0
+    # stpik.velocity_limits is omitted: use effective runtime caps.
+    # Set a full double vector to enforce stricter caps in generalized order.
+    stpik.snapshot_joint_tolerance: 0.001
+    stpik.snapshot_position_tolerance: 0.005
+    stpik.snapshot_orientation_tolerance: 0.01
     solver_method: dls
     dls_lambda: 0.05
     dof_weights: [1.0, 1.0, 1.0, 2.0, 2.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]

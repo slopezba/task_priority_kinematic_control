@@ -78,6 +78,7 @@ void JointLimitsTask::configure(
 
 void JointLimitsTask::prepare_computation(TaskComputation & out) const
 {
+  out.structural_zero_rows = true;
   out.jacobian.setZero(joint_count_, dofs_);
   out.error.setZero(joint_count_);
   out.desired_velocity.setZero(joint_count_);

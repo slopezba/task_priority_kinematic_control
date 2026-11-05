@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <sstream>
+#include <iomanip>
 
 namespace task_priority_kinematic_control
 {
@@ -22,36 +24,86 @@ void HierarchySolver::set_weights(const Eigen::VectorXd & weights) { weights_ = 
 void HierarchySolver::set_velocity_limits(const Eigen::VectorXd & limits) { velocity_limits_ = limits; }
 double HierarchySolver::last_condition_estimate() const { return last_condition_estimate_; }
 
-WholeBodyCommand HierarchySolver::solve(const std::vector<TaskComputation> & tasks) const
+std::string HierarchySolver::configuration_key() const
+{
+  std::ostringstream out;
+  out << std::setprecision(17) << dofs_ << ':' << static_cast<int>(method_) << ':' << damping_
+      << ':' << weights_.transpose() << ':' << velocity_limits_.transpose();
+  return out.str();
+}
+
+WholeBodyCommand HierarchySolver::solve(const std::vector<TaskComputation> & tasks,
+  Diagnostic * diagnostic, double singular_value_tolerance) const
 {
   WholeBodyCommand out;
   out.generalized_velocity = Eigen::VectorXd::Zero(dofs_);
   Eigen::MatrixXd projector = Eigen::MatrixXd::Identity(dofs_, dofs_);
 
+  if (diagnostic) {
+    *diagnostic = Diagnostic{};
+    diagnostic->minimum_singular_values.assign(tasks.size(), std::numeric_limits<double>::infinity());
+    diagnostic->rank_deficient.assign(tasks.size(), false);
+  }
+  size_t task_index = 0;
   for (const auto & task : tasks) {
+    const size_t index = task_index++;
     if (!task.active || task.jacobian.cols() != static_cast<Eigen::Index>(dofs_) ||
         task.desired_velocity.size() != task.jacobian.rows() || !task.jacobian.allFinite() ||
         !task.desired_velocity.allFinite())
     {
+      if (diagnostic && task.active) {
+        diagnostic->valid = false; diagnostic->failing_task = index; diagnostic->message = "Invalid active task computation";
+      }
       continue;
     }
     const Eigen::MatrixXd augmented = task.jacobian * projector;
     if (augmented.rows() == 0 || augmented.cols() == 0 || !augmented.allFinite()) {
+      if (diagnostic && !augmented.allFinite()) {
+        diagnostic->valid = false; diagnostic->failing_task = index;
+        diagnostic->message = "Nonfinite projected Jacobian";
+      }
       continue;
+    }
+    if (diagnostic) {
+      std::vector<Eigen::Index> rows;
+      for (Eigen::Index row = 0; row < task.jacobian.rows(); ++row) {
+        if (!task.structural_zero_rows || task.jacobian.row(row).norm() > singular_value_tolerance) {
+          rows.push_back(row);
+        }
+      }
+      if (!rows.empty()) {
+        Eigen::MatrixXd required(rows.size(), augmented.cols());
+        for (size_t row = 0; row < rows.size(); ++row) {required.row(row) = augmented.row(rows[row]);}
+        if (weights_.size() == required.cols()) {
+          required = required * weights_.cwiseMax(1e-6).cwiseSqrt().cwiseInverse().asDiagonal();
+        }
+        Eigen::JacobiSVD<Eigen::MatrixXd> svd(required);
+        if (svd.info() != Eigen::Success || !svd.singularValues().allFinite()) {
+          diagnostic->valid = false; diagnostic->failing_task = index; diagnostic->message = "Projected Jacobian SVD failed";
+        } else {
+          const double minimum = svd.singularValues().minCoeff();
+          diagnostic->minimum_singular_values[index] = minimum;
+          diagnostic->rank_deficient[index] = minimum < singular_value_tolerance ||
+            required.rows() > required.cols();
+        }
+      }
     }
     const Eigen::MatrixXd inverse = weighted_inverse(augmented);
     if (inverse.rows() != static_cast<Eigen::Index>(dofs_) || inverse.cols() != augmented.rows() ||
         !inverse.allFinite())
     {
+      if (diagnostic) {diagnostic->valid = false; diagnostic->failing_task = index; diagnostic->message = "Task inverse failed";}
       continue;
     }
     const Eigen::VectorXd residual = task.desired_velocity - task.jacobian * out.generalized_velocity;
     const Eigen::VectorXd delta = projector * (inverse * residual);
     if (!delta.allFinite()) {
+      if (diagnostic) {diagnostic->valid = false; diagnostic->failing_task = index; diagnostic->message = "Nonfinite solver increment";}
       continue;
     }
     out.generalized_velocity += delta;
     if (!out.generalized_velocity.allFinite()) {
+      if (diagnostic) {diagnostic->valid = false; diagnostic->failing_task = index; diagnostic->message = "Nonfinite solution";}
       out.generalized_velocity.setZero();
       projector.setIdentity();
       continue;
@@ -60,10 +112,12 @@ WholeBodyCommand HierarchySolver::solve(const std::vector<TaskComputation> & tas
     if (strict_inverse.rows() != static_cast<Eigen::Index>(dofs_) ||
         strict_inverse.cols() != augmented.rows() || !strict_inverse.allFinite())
     {
+      if (diagnostic) {diagnostic->valid = false; diagnostic->failing_task = index; diagnostic->message = "Nullspace inverse failed";}
       continue;
     }
     projector -= projector * strict_inverse * augmented;
     if (!projector.allFinite()) {
+      if (diagnostic) {diagnostic->valid = false; diagnostic->failing_task = index; diagnostic->message = "Nonfinite nullspace";}
       projector.setIdentity();
     }
   }

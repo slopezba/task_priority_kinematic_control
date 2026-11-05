@@ -83,7 +83,7 @@ TaskComputation JointTrajectoryTask::update(
     return computation;
   }
 
-  double elapsed = std::chrono::duration<double>(SteadyClock::now() - start_time_).count();
+  double elapsed = std::chrono::duration<double>(steady_now() - start_time_).count();
   if (use_ros_time_) {
     const int64_t now_ns = state.ros_time_valid ? state.ros_time_ns : context_.clock->now().nanoseconds();
     if (ros_cycle_seen_ && now_ns < last_ros_time_ns_) {
@@ -181,7 +181,7 @@ bool JointTrajectoryTask::set_joint_trajectory(
   }
 
   samples_ = std::move(samples);
-  start_time_ = SteadyClock::now();
+  start_time_ = steady_now();
   use_ros_time_ = static_cast<bool>(context_.clock);
   start_time_ros_ns_ = stamp_ns == 0 ? now_ns : stamp_ns;
   last_ros_time_ns_ = now_ns;

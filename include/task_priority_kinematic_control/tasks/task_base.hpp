@@ -10,6 +10,8 @@
 #include <rclcpp/clock.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <map>
+#include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -22,6 +24,8 @@ struct TaskContext
   // Initialization access only; never keep a plugin alive beyond its host loader.
   std::weak_ptr<KinematicsBackend> backend = {};
   rclcpp::Clock::SharedPtr clock = {};
+  // Offline snapshots replace wall time with the simulated monotonic clock.
+  std::function<std::chrono::steady_clock::time_point()> steady_now = {};
 };
 
 class TaskBase
@@ -71,6 +75,7 @@ public:
 
 class TaskBaseCommon : public TaskBase
 {
+  friend class StpikTaskAccess;
 public:
   bool set_pose_goal(const geometry_msgs::msg::PoseStamped & goal) override;
   bool set_joint_target(const std::vector<double> & target, std::string & message) override;
@@ -94,6 +99,9 @@ public:
   bool enabled() const override;
 
 protected:
+  std::chrono::steady_clock::time_point steady_now() const
+  {return context_.steady_now ? context_.steady_now() : std::chrono::steady_clock::now();}
+
   void configure_common(
     const std::string & id,
     const std::string & plugin_name,

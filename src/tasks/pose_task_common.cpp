@@ -4,6 +4,20 @@
 
 namespace task_priority_kinematic_control
 {
+PoseTaskCommon::PoseTaskCommon(const PoseTaskCommon & other)
+: TaskBaseCommon(other)
+{
+  std::scoped_lock lock(other.feedforward_mutex_);
+  feedforward_ = other.feedforward_;
+  feedforward_epoch_ = other.feedforward_epoch_;
+  accept_feedforward_ = other.accept_feedforward_;
+  auto_update_target_pose_ = other.auto_update_target_pose_;
+  feedforward_velocity_threshold_ = other.feedforward_velocity_threshold_;
+  initialize_target_ = other.initialize_target_;
+  feedforward_timeout_ = other.feedforward_timeout_;
+  feedforward_time_ = other.feedforward_time_;
+}
+
 void PoseTaskCommon::configure_pose_feedforward(
   const std::map<std::string, rclcpp::Parameter> & parameters)
 {
@@ -55,7 +69,7 @@ bool PoseTaskCommon::set_feedforward(const PoseVelocity & velocity, uint64_t epo
   if (!accept_feedforward_ || epoch != feedforward_epoch_) {return false;}
   if (!velocity.allFinite()) {feedforward_.setZero(); return false;}
   feedforward_ = velocity;
-  feedforward_time_ = std::chrono::steady_clock::now();
+  feedforward_time_ = steady_now();
   return true;
 }
 
@@ -127,7 +141,7 @@ PoseVelocity PoseTaskCommon::pose_feedforward() const
 {
   std::scoped_lock lock(feedforward_mutex_);
   if (feedforward_timeout_ > 0.0 && std::chrono::duration<double>(
-      std::chrono::steady_clock::now() - feedforward_time_).count() > feedforward_timeout_) {
+      steady_now() - feedforward_time_).count() > feedforward_timeout_) {
     return PoseVelocity::Zero();
   }
   return feedforward_;

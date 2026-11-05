@@ -11,6 +11,7 @@ namespace task_priority_kinematic_control
 // References and twists are always expressed at the base origin in world axes.
 class BasePoseTrajectoryTask : public TaskBaseCommon
 {
+  friend class StpikTaskAccess;
 public:
   using Coordinates = sura_manipulation_actions::BaseCoordinates;
   void configure(const std::string &, const std::string &,

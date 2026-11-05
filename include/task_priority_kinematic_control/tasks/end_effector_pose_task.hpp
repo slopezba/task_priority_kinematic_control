@@ -10,6 +10,7 @@ namespace task_priority_kinematic_control
 
 class EndEffectorPoseTask : public PoseTaskCommon
 {
+  friend class StpikTaskAccess;
 public:
   void configure(
     const std::string & id,

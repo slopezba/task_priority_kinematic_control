@@ -81,7 +81,7 @@ TEST(StabilizeLimitsMarkers, CompactGaugesHaveCenteredArcsShortArrowsAndNoText)
     const auto & origin = arrow.points[0];
     EXPECT_DOUBLE_EQ(origin.x, 0);
     EXPECT_DOUBLE_EQ(origin.y, axis == 0 ? 0 : .22);
-    EXPECT_DOUBLE_EQ(origin.z, axis == 0 ? -.15 : -.18);
+    EXPECT_DOUBLE_EQ(origin.z, axis == 0 ? -.25 : -.28);
     const auto distance = [&](const geometry_msgs::msg::Point & p) {
       return std::sqrt(std::pow(p.x-origin.x, 2) + std::pow(p.y-origin.y, 2) + std::pow(p.z-origin.z, 2));
     };

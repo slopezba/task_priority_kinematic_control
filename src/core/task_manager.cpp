@@ -57,24 +57,37 @@ std::vector<TaskComputation> TaskManager::update_all(
 const std::vector<TaskComputation> & TaskManager::update_all_into(
   const WholeBodyState & state, const KinematicsBackend & backend)
 {
-  for (size_t i = 0; i < tasks_.size(); ++i) {
-    tasks_[i]->update_into(state, backend, computations_[i]);
-  }
+  update_tasks_into(tasks_, computations_, state, backend);
   return computations_;
 }
 
 void TaskManager::finalize_command(WholeBodyCommand & command, int64_t timestamp_ns)
 {
-  const bool stop = std::any_of(computations_.begin(), computations_.end(),
+  finalize_tasks_command(tasks_, computations_, *model_, command, timestamp_ns);
+}
+
+void TaskManager::update_tasks_into(const std::vector<std::shared_ptr<TaskBase>> & tasks,
+  std::vector<TaskComputation> & computations, const WholeBodyState & state,
+  const KinematicsBackend & backend)
+{
+  for (size_t i = 0; i < tasks.size(); ++i) {
+    tasks[i]->update_into(state, backend, computations[i]);
+  }
+}
+
+void TaskManager::finalize_tasks_command(const std::vector<std::shared_ptr<TaskBase>> & tasks,
+  const std::vector<TaskComputation> & computations, const WholeBodyModel & model,
+  WholeBodyCommand & command, int64_t timestamp_ns)
+{
+  const bool stop = std::any_of(computations.begin(), computations.end(),
     [](const TaskComputation & c) {return c.stop_arm_motion;});
-  if (stop && !tasks_.empty()) {
+  if (stop && !tasks.empty()) {
     // Each task uses the same whole-body ordering. Zero only the arm segments.
     // The caller passes a fully sized generalized command.
-    const auto & model = model_;
-    command.generalized_velocity.segment(model->left_offset(), model->left_arm_dofs()).setZero();
-    command.generalized_velocity.segment(model->right_offset(), model->right_arm_dofs()).setZero();
+    command.generalized_velocity.segment(model.left_offset(), model.left_arm_dofs()).setZero();
+    command.generalized_velocity.segment(model.right_offset(), model.right_arm_dofs()).setZero();
   }
-  for (const auto & task : tasks_) {task->observe_command(command, timestamp_ns);}
+  for (const auto & task : tasks) {task->observe_command(command, timestamp_ns);}
 }
 
 bool TaskManager::arm_motion_stopped() const

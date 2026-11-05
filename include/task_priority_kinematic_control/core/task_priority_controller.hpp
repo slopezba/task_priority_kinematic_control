@@ -1,5 +1,7 @@
 #pragma once
 
+#include "task_priority_kinematic_control/core/stpik_check_io.hpp"
+
 #include "task_priority_kinematic_control/core/pose_task_io.hpp"
 #include "task_priority_kinematic_control/core/cartesian_execution_io.hpp"
 #include "task_priority_kinematic_control/core/manual_task_io.hpp"
@@ -205,6 +207,9 @@ private:
   bool trajectory_execution_ready_{false};
   std::map<std::string, TrajectoryActionSlot> trajectory_action_slots_;
   rclcpp::TimerBase::SharedPtr trajectory_result_timer_;
+  // Destroy the checker before any captured host state.
+  StpikCheckIO stpik_check_io_;
+
 };
 
 }  // namespace task_priority_kinematic_control

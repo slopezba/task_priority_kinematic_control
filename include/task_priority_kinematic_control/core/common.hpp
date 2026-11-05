@@ -48,6 +48,8 @@ struct WholeBodyCommand
 
 struct TaskComputation
 {
+  // Set-based tasks reserve rows for inactive constraints; these zeros are structural.
+  bool structural_zero_rows = false;
   Eigen::MatrixXd jacobian;
   Eigen::VectorXd desired_velocity;
   Eigen::VectorXd error;

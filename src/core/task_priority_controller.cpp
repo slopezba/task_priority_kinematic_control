@@ -296,6 +296,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_init()
     auto_declare_if_missing(this, "navigator_timeout", 0.0);
     auto_declare_if_missing(this, "task_ids", std::vector<std::string>{});
     CartesianExecutionIO::declare_parameters(get_node().get());
+    StpikCheckIO::declare_parameters(get_node().get());
     declare_task_parameters();
   } catch (const std::exception & ex) {
     RCLCPP_ERROR(get_node()->get_logger(), "Exception in on_init: %s", ex.what());
@@ -1010,6 +1011,13 @@ void TaskPriorityController::configure_external_interfaces()
         get_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE &&
         state_.navigation_valid && navigation_sample_.is_fresh(navigator_timeout_);
     });
+  stpik_check_io_.configure_host(get_node().get(), task_mutex_, state_, model_, backend_, solver_,
+    task_manager_, [this]() {
+      return trajectory_execution_ready_ && trajectory_action_slots_.empty() &&
+        !cartesian_coordinator_.owns_tasks() && !parameter_update_pending_.load() &&
+        get_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE &&
+        state_.joints_valid && state_.navigation_valid && navigation_sample_.is_fresh(navigator_timeout_);
+    });
   manual_task_io_.configure(get_node().get(), task_manager_->tasks(), task_mutex_,
     [this](const std::string & task, std::string & message) {return task_manager_->allow_mutation(task, message);});
   task_joint_target_subs_.clear();
@@ -1284,6 +1292,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_activate(
 controller_interface::CallbackReturn TaskPriorityController::on_deactivate(
   const rclcpp_lifecycle::State &)
 {
+  stpik_check_io_.cancel_pending();
   stop_task_trajectory_goals("Task priority controller deactivated");
   {
     std::scoped_lock lock(task_mutex_);
@@ -1303,6 +1312,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_deactivate(
 controller_interface::CallbackReturn TaskPriorityController::on_cleanup(
   const rclcpp_lifecycle::State &)
 {
+  stpik_check_io_.stop();
   stop_task_trajectory_goals("Task priority controller cleaned up");
   {
     std::scoped_lock lock(task_mutex_);
@@ -1323,6 +1333,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_cleanup(
 controller_interface::CallbackReturn TaskPriorityController::on_shutdown(
   const rclcpp_lifecycle::State &)
 {
+  stpik_check_io_.stop();
   stop_task_trajectory_goals("Task priority controller shut down");
   {
     std::scoped_lock lock(task_mutex_);

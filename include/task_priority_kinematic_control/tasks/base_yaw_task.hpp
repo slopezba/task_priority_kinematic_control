@@ -7,6 +7,7 @@ namespace task_priority_kinematic_control
 
 class BaseYawTask : public TaskBaseCommon
 {
+  friend class StpikTaskAccess;
 public:
   void configure(
     const std::string & id,

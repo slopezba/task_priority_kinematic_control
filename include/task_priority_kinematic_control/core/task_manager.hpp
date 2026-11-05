@@ -40,6 +40,13 @@ public:
   const std::vector<TaskComputation> & update_all_into(
     const WholeBodyState & state, const KinematicsBackend & backend);
   void finalize_command(WholeBodyCommand & command, int64_t timestamp_ns);
+  // The real host and offline checker share these task update/finalization steps.
+  static void update_tasks_into(const std::vector<std::shared_ptr<TaskBase>> & tasks,
+    std::vector<TaskComputation> & computations, const WholeBodyState & state,
+    const KinematicsBackend & backend);
+  static void finalize_tasks_command(const std::vector<std::shared_ptr<TaskBase>> & tasks,
+    const std::vector<TaskComputation> & computations, const WholeBodyModel & model,
+    WholeBodyCommand & command, int64_t timestamp_ns);
   bool arm_motion_stopped() const;
 
   bool set_task_pose_feedforward_option(const std::string & task_id, const std::string & field,

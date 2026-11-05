@@ -12,7 +12,10 @@ using PoseVelocity = Eigen::Matrix<double, 6, 1>;
 // Epochs reject callbacks spanning a disable/reset. Expiry is opt-in.
 class PoseTaskCommon : public TaskBaseCommon
 {
+  friend class StpikTaskAccess;
 public:
+  PoseTaskCommon() = default;
+  PoseTaskCommon(const PoseTaskCommon & other);
   uint64_t feedforward_epoch() const;
   bool set_feedforward(const PoseVelocity & velocity, uint64_t epoch);
   void clear_feedforward();

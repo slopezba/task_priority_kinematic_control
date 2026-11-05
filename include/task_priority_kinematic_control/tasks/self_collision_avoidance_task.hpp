@@ -66,6 +66,7 @@ struct CollisionSnapshot
 
 class SelfCollisionAvoidanceTask : public TaskBaseCommon
 {
+  friend class StpikTaskAccess;
 public:
   void configure(
     const std::string & id, const std::string & plugin_name,

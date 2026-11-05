@@ -9,6 +9,7 @@ namespace task_priority_kinematic_control
 
 class FramePoseTask : public PoseTaskCommon
 {
+  friend class StpikTaskAccess;
 public:
   void configure(
     const std::string & id,

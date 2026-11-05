@@ -9,6 +9,7 @@ namespace task_priority_kinematic_control
 
 class JointNominalTask : public TaskBaseCommon
 {
+  friend class StpikTaskAccess;
 public:
   void configure(
     const std::string & id,

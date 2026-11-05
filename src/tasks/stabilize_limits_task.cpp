@@ -75,6 +75,7 @@ void StabilizeLimitsTask::configure(
 
 void StabilizeLimitsTask::prepare_computation(TaskComputation & out) const
 {
+  out.structural_zero_rows = true;
   out.jacobian.setZero(2, dofs_);
   out.error.setZero(2);
   out.desired_velocity.setZero(2);

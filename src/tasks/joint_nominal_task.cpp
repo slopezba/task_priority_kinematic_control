@@ -100,7 +100,7 @@ TaskComputation JointNominalTask::update(
   }
 
   computation.jacobian = Eigen::MatrixXd::Zero(active_rows.size(), context_.model->total_dofs());
-  if (std::chrono::duration<double>(std::chrono::steady_clock::now() - command_time_).count() > command_timeout_) {
+  if (std::chrono::duration<double>(steady_now() - command_time_).count() > command_timeout_) {
     clear_velocity();
   }
   computation.feedforward = feedforward_;
@@ -167,7 +167,7 @@ bool JointNominalTask::set_joint_command(
   }
   target_ = target;
   feedforward_ = velocity;
-  command_time_ = std::chrono::steady_clock::now();
+  command_time_ = steady_now();
   message = "Joint target and feedforward updated";
   return true;
 }

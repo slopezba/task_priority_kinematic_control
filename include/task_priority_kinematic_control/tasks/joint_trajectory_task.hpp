@@ -10,6 +10,7 @@ namespace task_priority_kinematic_control
 
 class JointTrajectoryTask : public TaskBaseCommon
 {
+  friend class StpikTaskAccess;
 public:
   void configure(
     const std::string & id,

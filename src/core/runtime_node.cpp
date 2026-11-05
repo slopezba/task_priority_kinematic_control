@@ -133,6 +133,7 @@ RuntimeNode::RuntimeNode(const rclcpp::NodeOptions & options)
 void RuntimeNode::declare_parameters()
 {
   CartesianExecutionIO::declare_parameters(this);
+  StpikCheckIO::declare_parameters(this);
   declare_if_missing<std::string>(*this, "backend_plugin", "task_priority_kinematic_control/KDLKinematicsBackend");
   declare_if_missing<std::string>(*this, "robot_description", "");
   declare_if_missing<std::string>(*this, "robot_description_source_node", "/robot_state_publisher");
@@ -397,6 +398,16 @@ void RuntimeNode::configure_subscribers()
       return trajectory_action_slots_.empty() && state_.navigation_valid && state_.joints_valid &&
         (navigator_timeout_ <= 0 || (navigation_age >= 0 && navigation_age <= navigator_timeout_*1e9)) &&
         (joint_state_timeout_ <= 0 || (joints_age >= 0 && joints_age <= joint_state_timeout_*1e9));
+    });
+  stpik_check_io_.configure_host(this, task_mutex_, state_, model_, backend_, solver_, task_manager_,
+    [this]() {
+      const int64_t now_ns = now().nanoseconds();
+      const int64_t nav_age = now_ns - navigator_received_ns_;
+      const int64_t joint_age = now_ns - joints_received_ns_;
+      return trajectory_action_slots_.empty() && !cartesian_coordinator_.owns_tasks() &&
+        state_.navigation_valid && state_.joints_valid &&
+        (navigator_timeout_ <= 0 || (nav_age >= 0 && nav_age <= navigator_timeout_ * 1e9)) &&
+        (joint_state_timeout_ <= 0 || (joint_age >= 0 && joint_age <= joint_state_timeout_ * 1e9));
     });
   manual_task_io_.configure(this, task_manager_->tasks(), task_mutex_,
     [this](const std::string & task, std::string & message) {return task_manager_->allow_mutation(task, message);});

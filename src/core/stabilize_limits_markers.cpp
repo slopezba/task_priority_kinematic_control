@@ -17,7 +17,7 @@ constexpr double arc_radius = .18;
 constexpr double arrow_length = .16;
 
 Eigen::Vector3d center(size_t axis)
-{return Eigen::Vector3d(0, axis == 0 ? 0 : .22, axis == 0 ? -.15 : -.18);}
+{return Eigen::Vector3d(0, axis == 0 ? 0 : .22, axis == 0 ? -.25 : -.28);}
 
 geometry_msgs::msg::Point point(const Eigen::Vector3d & p)
 {

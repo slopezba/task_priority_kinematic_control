@@ -29,6 +29,7 @@ struct StabilizeLimitsSnapshot
 // Set-based bounds on base Euler roll/pitch; no pose target or feedforward.
 class StabilizeLimitsTask : public TaskBaseCommon
 {
+  friend class StpikTaskAccess;
 public:
   void configure(
     const std::string & id, const std::string & plugin_name,

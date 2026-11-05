@@ -267,6 +267,7 @@ void SelfCollisionAvoidanceTask::reset()
 
 void SelfCollisionAvoidanceTask::prepare_computation(TaskComputation & out) const
 {
+  out.structural_zero_rows = true;
   out.jacobian.setZero(jacobian_.rows(), jacobian_.cols());
   out.desired_velocity.setZero(desired_.size()); out.error.setZero(errors_.size());
   out.status_message.reserve(64);

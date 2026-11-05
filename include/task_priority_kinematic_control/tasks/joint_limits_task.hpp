@@ -26,6 +26,7 @@ struct JointLimitsSnapshot
 
 class JointLimitsTask : public TaskBaseCommon
 {
+  friend class StpikTaskAccess;
 public:
   void configure(
     const std::string & id,

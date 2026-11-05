@@ -5,6 +5,8 @@
 #include <Eigen/Core>
 
 #include <vector>
+#include <limits>
+#include <string>
 
 namespace task_priority_kinematic_control
 {
@@ -18,7 +20,19 @@ public:
   void set_weights(const Eigen::VectorXd & weights);
   void set_velocity_limits(const Eigen::VectorXd & limits);
 
-  WholeBodyCommand solve(const std::vector<TaskComputation> & tasks) const;
+  struct Diagnostic
+  {
+    bool valid = true;
+    std::string message;
+    size_t failing_task = std::numeric_limits<size_t>::max();
+    // Per priority: projected, weighted Jacobian, with structural zero rows removed.
+    std::vector<double> minimum_singular_values;
+    std::vector<bool> rank_deficient;
+  };
+  WholeBodyCommand solve(const std::vector<TaskComputation> & tasks,
+    Diagnostic * diagnostic = nullptr, double singular_value_tolerance = 1e-6) const;
+  const Eigen::VectorXd & velocity_limits() const {return velocity_limits_;}
+  std::string configuration_key() const;
   double last_condition_estimate() const;
 
 private:

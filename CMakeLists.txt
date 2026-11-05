@@ -57,6 +57,9 @@ add_library(${core_target} SHARED
   src/geometry/plane_geometry.cpp
   src/core/capsule_observer.cpp
   src/core/stabilize_limits_markers.cpp
+  src/core/stpik_snapshot.cpp
+  src/core/stpik_check.cpp
+  src/core/stpik_check_io.cpp
   src/core/task_manager.cpp
   src/core/cartesian_trajectory_coordinator.cpp
   src/core/task_priority_controller.cpp
@@ -193,6 +196,11 @@ ament_export_dependencies(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_stpik_check test/test_stpik_check.cpp)
+  if(TARGET test_stpik_check)
+    target_link_libraries(test_stpik_check ${core_target})
+    ament_target_dependencies(test_stpik_check rclcpp sura_manipulation_actions)
+  endif()
 
   foreach(collision_test IN ITEMS capsule_geometry plane_geometry self_collision_avoidance_task capsule_visualization joint_limits_markers stabilize_limits_markers)
     ament_add_gtest(test_${collision_test} test/test_${collision_test}.cpp)
