@@ -793,8 +793,15 @@ rcl_interfaces::msg::SetParametersResult TaskPriorityController::on_parameters_s
     }
   }
 
+  // ROS holds its parameter mutex while invoking this callback. Never wait
+  // for the control loop (or another task owner) with that mutex held.
+  std::unique_lock<std::mutex> lock(task_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    result.successful = false;
+    result.reason = "Task priority is busy; retry the parameter update";
+    return result;
+  }
   ParameterUpdateGuard pending(parameter_update_pending_);
-  std::scoped_lock lock(task_mutex_);
   const auto collision_validation = validate_collision_parameter_updates(parameters, task_manager_->tasks(), false);
   if (!collision_validation.successful) {return collision_validation;}
   const auto limits_validation = validate_joint_limits_marker_parameter_updates(parameters, task_manager_->tasks(), false);
@@ -903,8 +910,7 @@ void TaskPriorityController::configure_external_interfaces()
       std::scoped_lock lock(task_mutex_);
       response->tasks = task_manager_->get_task_statuses();
       response->backend_name = backend_ ? backend_->name() : backend_plugin_name_;
-      response->solver_method = solver_method_name(
-        parse_solver_method(get_node()->get_parameter("solver_method").as_string()));
+      response->solver_method = solver_method_name(solver_.method());
       response->success = true;
       response->message = "ok";
     });
@@ -1153,10 +1159,9 @@ void TaskPriorityController::publish_hierarchy_state(const rclcpp::Time & time)
 
   msg::HierarchyState state_msg;
   state_msg.header.stamp = time;
-  state_msg.header.frame_id = get_node()->get_parameter("world_frame").as_string();
+  state_msg.header.frame_id = model_->world_frame();
   state_msg.backend_name = backend_ ? backend_->name() : backend_plugin_name_;
-  state_msg.solver_method = solver_method_name(
-    parse_solver_method(get_node()->get_parameter("solver_method").as_string()));
+  state_msg.solver_method = solver_method_name(solver_.method());
   state_msg.ready = true;
   state_msg.tasks = task_manager_->get_task_statuses();
   hierarchy_state_pub_->publish(state_msg);
@@ -1214,7 +1219,7 @@ void TaskPriorityController::publish_controller_output(
 
   msg::ControllerOutput output_msg;
   output_msg.header.stamp = time;
-  output_msg.header.frame_id = get_node()->get_parameter("world_frame").as_string();
+  output_msg.header.frame_id = model_->world_frame();
 
   for (const auto dof : active_base_dofs_) {
     output_msg.generalized_velocity_names.push_back(base_dof_name(dof));
@@ -1516,6 +1521,9 @@ controller_interface::return_type TaskPriorityController::update(
   }
 
   process_pending_runtime_tuning();
+  // Do not access ROS parameters while holding task_mutex_: parameter
+  // callbacks enter with the parameter mutex held and may acquire task_mutex_.
+  // Reporting uses the configured model and solver instead of get_parameter().
   std::unique_lock<std::mutex> state_lock(task_mutex_);
 
   navigation_sample_ = *navigator_buffer_.readFromRT();
@@ -1585,10 +1593,6 @@ controller_interface::return_type TaskPriorityController::update(
 
   WholeBodyCommand command;
   {
-    if (parameter_update_pending_.load(std::memory_order_acquire)) {
-      return controller_interface::return_type::OK;
-    }
-
     state_.ros_time_ns = time.nanoseconds();
     state_.ros_time_valid = true;
     backend_->update(state_);

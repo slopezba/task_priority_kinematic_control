@@ -31,6 +31,7 @@ public:
   };
   WholeBodyCommand solve(const std::vector<TaskComputation> & tasks,
     Diagnostic * diagnostic = nullptr, double singular_value_tolerance = 1e-6) const;
+  SolverMethod method() const {return method_;}
   const Eigen::VectorXd & velocity_limits() const {return velocity_limits_;}
   std::string configuration_key() const;
   double last_condition_estimate() const;

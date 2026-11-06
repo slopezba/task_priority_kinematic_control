@@ -1114,3 +1114,23 @@ atrasados. `TaskState.feedforward` muestra la velocidad aplicada en el mundo.
 
 Con `auto_update_target_pose: false`, se respeta el objetivo recibido por `/target`
 y solamente se suma la velocidad. Las demás tareas no reciben estos tópicos.
+
+### Cambiar la actualización automática durante el control
+
+En el controlador `ros2_control`, las publicaciones y el servicio de listado
+leen el frame del modelo y el método del solver, sin acceder a parámetros ROS
+bajo el bloqueo de tareas. El callback de parámetros intenta adquirir ese
+bloqueo sin esperar: si está ocupado, rechaza la petición con
+`Task priority is busy; retry the parameter update`. El cliente debe comprobar
+la respuesta y reintentar cuando proceda; un rechazo por ocupación no aplica
+ningún cambio. No hay que desactivar el controlador para cambiar esta opción:
+
+```bash
+ros2 param set /cirtesub/alpha/controller/task_priority_controller tasks.base_pose.auto_update_target_pose false
+ros2 param set /cirtesub/alpha/controller/task_priority_controller tasks.base_pose.auto_update_target_pose true
+```
+
+Al volver de `false` a `true`, la tarea captura la pose medida en el siguiente
+ciclo. Poner primero a cero el feedforward de compensación evita conservar una
+velocidad residual. Estos comandos no gestionan automáticamente el inicio ni
+la restauración de una acción; debe hacerlo el cliente de la acción.
