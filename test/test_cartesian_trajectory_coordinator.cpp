@@ -53,7 +53,8 @@ protected:
     ASSERT_EQ(rcl_enable_ros_time_override(clock->get_clock_handle()), RCL_RET_OK);
     set_time(1.0);
     node->declare_parameter("task_ids", std::vector<std::string>{"base_pose_trajectory", "left_joint_trajectory",
-      "right_joint_trajectory", "left_arm_nominal", "right_arm_nominal", "base_pose", "stabilize_limits"});
+      "right_joint_trajectory", "left_arm_nominal", "right_arm_nominal", "base_pose", "stabilize_limits",
+      "right_pose", "left_pose"});
     declare_task("base_pose_trajectory", "BasePoseTrajectoryTask", false, {});
     declare_task("left_joint_trajectory", "JointTrajectoryTask", false, left_names());
     declare_task("right_joint_trajectory", "JointTrajectoryTask", false, right_names());
@@ -61,6 +62,10 @@ protected:
     declare_task("right_arm_nominal", "JointNominalTask", false, right_names());
     declare_task("base_pose", "FramePoseTask", true, {});
     node->declare_parameter("tasks.base_pose.frame_id", std::string("base"));
+    declare_task("left_pose", "FramePoseTask", false, {});
+    node->declare_parameter("tasks.left_pose.frame_id", std::string("left_tip"));
+    declare_task("right_pose", "FramePoseTask", false, {});
+    node->declare_parameter("tasks.right_pose.frame_id", std::string("right_tip"));
     declare_task("stabilize_limits", "StabilizeLimitsTask", true, {});
     node->declare_parameter("tasks.stabilize_limits.lower_limits", std::vector<double>{-0.35,-0.35});
     node->declare_parameter("tasks.stabilize_limits.upper_limits", std::vector<double>{0.35,0.35});
@@ -256,6 +261,43 @@ TEST_F(JointOrderExecutionTest, RejectsMalformedJointListsAndArraysWithoutInstal
     EXPECT_FALSE(find("base_pose_trajectory")->enabled());
     EXPECT_FALSE(coordinator.owns_tasks());
   }
+}
+
+TEST_F(CoordinatedExecutionTest, PostureReservationBlocksOtherCommandsAndReleasesOnInterruption)
+{
+  std::string reason;
+  ASSERT_TRUE(manager->reorder_tasks({"stabilize_limits", "right_pose", "base_pose", "left_pose",
+      "left_arm_nominal", "right_arm_nominal", "base_pose_trajectory", "left_joint_trajectory",
+      "right_joint_trajectory"}, reason)) << reason;
+  geometry_msgs::msg::PoseStamped target;
+  target.header.frame_id = "world_ned";
+  target.pose.orientation.w = 1.0;
+  target.pose.position.x = 0.2;
+  ASSERT_TRUE(manager->set_task_enabled("right_pose", true, reason));
+  ASSERT_TRUE(manager->set_task_pose_goal("right_pose", target, reason));
+  ASSERT_TRUE(manager->set_task_pose_goal("base_pose", target, reason));
+  const auto right_target = find("right_pose")->current_target();
+  const auto base_target = find("base_pose")->current_target();
+  ASSERT_TRUE(coordinator.reserve_posture("left_pose"));
+  EXPECT_FALSE(coordinator.reserve_posture("left_pose"));
+  EXPECT_FALSE(coordinator.allow_mutation("left_arm_nominal", state, *backend, reason));
+  coordinator.shutdown(state, *backend, "cancel posture");
+  EXPECT_FALSE(coordinator.owns_tasks());
+  EXPECT_FALSE(coordinator.posture_reserved());
+  EXPECT_TRUE(coordinator.allow_mutation("left_arm_nominal", state, *backend, reason));
+  EXPECT_TRUE(find("right_pose")->enabled());
+  EXPECT_EQ(find("right_pose")->current_target(), right_target);
+  EXPECT_EQ(find("base_pose")->current_target(), base_target);
+
+  ASSERT_TRUE(coordinator.reserve_posture("left_pose"));
+  auto nominal = find("left_arm_nominal");
+  ASSERT_TRUE(nominal->set_enabled(true));
+  ASSERT_TRUE(nominal->set_joint_target({0.12}, reason));
+  ASSERT_TRUE(coordinator.release(state, *backend, reason, true));
+  EXPECT_FALSE(nominal->enabled());
+  EXPECT_EQ(nominal->current_target(), std::vector<double>{0.12});
+  EXPECT_EQ(find("right_pose")->current_target(), right_target);
+  EXPECT_EQ(find("base_pose")->current_target(), base_target);
 }
 
 TEST_F(CoordinatedExecutionTest, EmptyBoundsAndExplicitZeroTolerancesAreValid)

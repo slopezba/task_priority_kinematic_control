@@ -1,4 +1,5 @@
 #include "task_priority_kinematic_control/core/runtime_node.hpp"
+#include "task_priority_kinematic_control/tasks/end_effectors_facing_task.hpp"
 
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <algorithm>
@@ -152,7 +153,7 @@ void RuntimeNode::declare_parameters()
   declare_if_missing<double>(*this, "rate_hz", 20.0);
   declare_if_missing<std::string>(*this, "navigator_topic", "/cirtesub/navigator/navigation");
   declare_if_missing<std::string>(*this, "joint_states_topic", "/cirtesub/alpha/joint_states");
-  declare_if_missing<std::string>(*this, "base_command_topic", "/cirtesub/controller/task_priority/base_cmd");
+  declare_if_missing<std::string>(*this, "base_command_topic", "/cirtesub/alpha/controller/task_priority/base_cmd");
   declare_if_missing<std::string>(*this, "left_arm_command_topic", "/cirtesub/alpha/controller/alpha_left_forward_velocity_controller/commands");
   declare_if_missing<std::string>(*this, "right_arm_command_topic", "/cirtesub/alpha/controller/alpha_right_forward_velocity_controller/commands");
   declare_if_missing<std::vector<std::string>>(*this, "task_ids", {});
@@ -180,7 +181,20 @@ void RuntimeNode::declare_parameters()
     } else if (this->get_parameter(prefix + "plugin").as_string() ==
       "task_priority_kinematic_control/JointLimitsTask") {
       declare_joint_limits_marker_parameters(get_node_parameters_interface(), prefix);
-    } else if (stabilize_limits) {
+    } else if (stabilize_limits || this->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/FramePoseLimitsTask") {
+      // Same debug/publish_marker_rate parameters for the frame pose limits markers.
+      declare_stabilize_limits_debug_parameters(get_node_parameters_interface(), prefix);
+    } else if (this->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/FramePositionNormLimitsTask" ||
+      this->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/FrameOrientationNormLimitsTask")
+    {
+      declare_stabilize_limits_debug_parameters(get_node_parameters_interface(), prefix);
+      declare_if_missing<bool>(*this, prefix + "always_active", false);
+    } else if (this->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/ArmManipulabilityTask")
+    {
       declare_stabilize_limits_debug_parameters(get_node_parameters_interface(), prefix);
     }
     declare_if_missing<std::string>(*this, prefix + "frame_id", "");
@@ -199,6 +213,7 @@ void RuntimeNode::declare_parameters()
       (this->get_parameter(prefix + "plugin").as_string() ==
       "task_priority_kinematic_control/SelfCollisionAvoidanceTask" ? 1.0 : 0.5));
     declare_if_missing<std::vector<std::string>>(*this, prefix + "joint_names", {});
+    declare_if_missing<std::vector<std::string>>(*this, prefix + "sync_tasks", {});
     declare_if_missing<std::vector<double>>(*this, prefix + "target", {});
     declare_if_missing<std::vector<int64_t>>(*this, prefix + "activation", {});
     declare_if_missing<double>(*this, prefix + "target_yaw", 0.0);
@@ -413,6 +428,7 @@ void RuntimeNode::configure_subscribers()
     [this](const std::string & task, std::string & message) {return task_manager_->allow_mutation(task, message);});
   manual_task_io_.set_active(true);
   task_joint_target_subs_.clear();
+  task_facing_target_subs_.clear();
   task_joint_trajectory_subs_.clear();
   task_joint_trajectory_action_servers_.clear();
   for (const auto & task : task_manager_->tasks()) {
@@ -437,6 +453,26 @@ void RuntimeNode::configure_subscribers()
               RCLCPP_WARN(
                 this->get_logger(),
                 "Rejected joint target for task '%s': %s",
+                task_id.c_str(),
+                message.c_str());
+            }
+          });
+      } else if (std::dynamic_pointer_cast<EndEffectorsFacingTask>(task)) {
+        const auto task_id = task->id();
+        task_facing_target_subs_[task_id] = this->create_subscription<msg::FacingTarget>(
+          "task_priority/tasks/" + task_id + "/facing_target",
+          10,
+          [this, task_id](const msg::FacingTarget::SharedPtr msg) {
+            if (!msg) {
+              return;
+            }
+
+            std::string message;
+            std::scoped_lock lock(task_mutex_);
+            if (!task_manager_->set_task_facing_target(task_id, *msg, message)) {
+              RCLCPP_WARN(
+                this->get_logger(),
+                "Rejected facing target for task '%s': %s",
                 task_id.c_str(),
                 message.c_str());
             }

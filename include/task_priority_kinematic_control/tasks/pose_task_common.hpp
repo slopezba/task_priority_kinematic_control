@@ -9,6 +9,17 @@ namespace task_priority_kinematic_control
 {
 using PoseVelocity = Eigen::Matrix<double, 6, 1>;
 
+// Shared pose helpers; namespaced to avoid clashing with file-local copies.
+namespace pose_math
+{
+// Axis-angle vector of target * current^-1 (world-frame rotation error).
+Eigen::Vector3d quaternion_error(const Eigen::Quaterniond & target, const Eigen::Quaterniond & current);
+// World pose of the base from navigation position and ZYX roll/pitch/yaw.
+Eigen::Isometry3d base_pose_from_state(const WholeBodyState & state);
+// 6 x total_dofs Jacobian selecting the active base DoFs.
+Eigen::MatrixXd base_jacobian_for_model(const WholeBodyModel & model);
+}  // namespace pose_math
+
 // Epochs reject callbacks spanning a disable/reset. Expiry is opt-in.
 class PoseTaskCommon : public TaskBaseCommon
 {

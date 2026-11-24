@@ -2,7 +2,10 @@
 #include "task_priority_kinematic_control/tasks/pose_task_common.hpp"
 #include "task_priority_kinematic_control/tasks/frame_pose_task.hpp"
 #include "task_priority_kinematic_control/tasks/end_effector_pose_task.hpp"
+#include "task_priority_kinematic_control/tasks/robot_nominal_task.hpp"
+#include "sura_manipulation_actions/whole_body_nominal.hpp"
 #include "sura_manipulation_actions/cartesian_pose_path.hpp"
+#include "sura_manipulation_actions/cartesian_tracking.hpp"
 #include <algorithm>
 #include <cmath>
 #include <deque>
@@ -31,12 +34,9 @@ geometry_msgs::msg::Pose poseMessage(const Eigen::Isometry3d & pose)
   out.orientation.z = q.z(); out.orientation.w = q.w(); return out;
 }
 Vector6 error(const Eigen::Isometry3d & desired, const Eigen::Isometry3d & measured,
-  const Eigen::Matrix3d & reference)
+  const Eigen::Matrix3d & reference, const Vector6 & activation = Vector6::Ones())
 {
-  Vector6 out;
-  out.head<3>() = reference.transpose() * (desired.translation() - measured.translation());
-  const Eigen::AngleAxisd delta(desired.rotation() * measured.rotation().transpose());
-  out.tail<3>() = reference.transpose() * (delta.axis() * delta.angle()); return out;
+  return sura_manipulation_actions::cartesianTrackingError(desired, measured, reference, activation);
 }
 bool within(const Vector6 & value, const Vector6 & tolerance, double epsilon)
 {return value.allFinite() && (value.cwiseAbs().array() <= tolerance.array() + epsilon).all();}
@@ -88,7 +88,10 @@ std::string StpikOptions::configuration_key() const
 }
 
 StpikAction::Result StpikCheck::run(StpikSnapshot snapshot, const StpikAction::Goal & goal,
-  const StpikOptions & options, const Canceled & canceled, const Progress & progress)
+  const StpikOptions & options, const Canceled & canceled, const Progress & progress,
+  const std::function<void(const WholeBodyState &, double)> & observe,
+  const std::function<void(const WholeBodyState &, double)> & reference_update,
+  const ValidateTasks & validate_tasks)
 {
   StpikAction::Result out;
   out.outcome = StpikAction::Result::FAIL;
@@ -121,7 +124,10 @@ StpikAction::Result StpikCheck::run(StpikSnapshot snapshot, const StpikAction::G
     return fail("FRAME_MISMATCH", "Trajectory must use the Task Priority world frame");
   }
   sura_manipulation_actions::CartesianPosePath path;
-  if (!path.initTimed(goal.trajectory, reason)) {return fail("INVALID_TRAJECTORY", reason);}
+  // Sampled requests use their own poses; otherwise the rest-to-rest profile is rebuilt.
+  const bool valid = goal.samples.empty() ?
+    path.initTimed(goal.trajectory, reason) : path.initSamples(goal.samples, reason);
+  if (!valid) {return fail("INVALID_TRAJECTORY", reason);}
   Vector6 path_tolerance, goal_tolerance;
   for (size_t i = 0; i < 6; ++i) {
     if (!std::isfinite(goal.path_tolerance[i]) || goal.path_tolerance[i] < 0.0 ||
@@ -160,6 +166,32 @@ StpikAction::Result StpikCheck::run(StpikSnapshot snapshot, const StpikAction::G
     (!std::dynamic_pointer_cast<FramePoseTask>(selected) &&
     !std::dynamic_pointer_cast<EndEffectorPoseTask>(selected)))
   {return fail("POSE_TASK_UNAVAILABLE", "Selected enabled task must implement the Pose backend");}
+  Vector6 activation = Vector6::Ones();
+  if (const auto frame = std::dynamic_pointer_cast<FramePoseTask>(selected)) {
+    activation = frame->activation();
+  }
+  // Optional whole-body nominal, streamed to robot_nominal exactly like the Pose executor.
+  sura_manipulation_actions::WholeBodyNominal nominal;
+  std::shared_ptr<RobotNominalTask> nominal_task;
+  std::vector<Eigen::Index> nominal_columns;
+  if (!goal.nominal_joints.points.empty() || !goal.nominal_base.points.empty()) {
+    if (!nominal.init(goal.nominal_joints, goal.nominal_base, reason)) {return fail("INVALID_NOMINAL", reason);}
+    if (nominal.frame() != snapshot.model->world_frame()) {
+      return fail("FRAME_MISMATCH", "Nominal trajectory must use the Task Priority world frame");
+    }
+    nominal_task = find_robot_nominal_task(snapshot.tasks);
+    if (!nominal_task || !nominal_task->enabled()) {
+      return fail("NOMINAL_TASK_UNAVAILABLE", "A nominal trajectory requires an enabled RobotNominalTask");
+    }
+    const auto names = snapshot.model->all_joint_names();
+    for (const auto & name : names) {
+      const auto found = std::find(nominal.joint_names().begin(), nominal.joint_names().end(), name);
+      if (found == nominal.joint_names().end()) {
+        return fail("INVALID_NOMINAL", "Nominal trajectory is missing joint " + name);
+      }
+      nominal_columns.push_back(static_cast<Eigen::Index>(found - nominal.joint_names().begin()));
+    }
+  }
   auto simulated_time = std::make_shared<std::chrono::steady_clock::time_point>(snapshot.captured);
   TaskContext context{snapshot.model, snapshot.backend, {}, [simulated_time]() {return *simulated_time;}};
   for (auto & task : snapshot.tasks) {StpikTaskAccess::bind(*task, context);}
@@ -175,6 +207,7 @@ StpikAction::Result StpikCheck::run(StpikSnapshot snapshot, const StpikAction::G
   const double end = path.duration() + goal.goal_time_tolerance;
   double time = 0.0;
   bool rank_deficient = false;
+  double position_stalled_since = -1.0, orientation_stalled_since = -1.0;
   try {
     while (true) {
       out.time_from_start = time;
@@ -197,6 +230,19 @@ StpikAction::Result StpikCheck::run(StpikSnapshot snapshot, const StpikAction::G
       if (!selected->set_pose_goal(target) ||
         !selected->set_feedforward(path.sampleVelocity(time), selected->feedforward_epoch()))
       {return fail("REFERENCE_REJECTED", "Isolated Pose task rejected reference/feedforward");}
+      if (nominal_task) {
+        sura_manipulation_actions::WholeBodyNominalSample sample;
+        if (!nominal.sample(time, sample, reason)) {return fail("INVALID_NOMINAL", reason);}
+        Eigen::VectorXd q(static_cast<Eigen::Index>(nominal_columns.size())), qd(q.size());
+        for (Eigen::Index j = 0; j < q.size(); ++j) {
+          q(j) = sample.joints(nominal_columns[static_cast<size_t>(j)]);
+          qd(j) = sample.joint_velocities(nominal_columns[static_cast<size_t>(j)]);
+        }
+        if (!apply_robot_nominal_reference(snapshot.tasks, *nominal_task, sample.base,
+          sample.base_rates, q, qd, reason))
+        {return fail("REFERENCE_REJECTED", "robot_nominal rejected its reference: " + reason);}
+      }
+      if (reference_update) {reference_update(state, time);}
       snapshot.backend->update(state);
       TaskManager::update_tasks_into(snapshot.tasks, computations, state, *snapshot.backend);
       const auto & pose_computation = computations[selected_index];
@@ -204,13 +250,17 @@ StpikAction::Result StpikCheck::run(StpikSnapshot snapshot, const StpikAction::G
         pose_computation.frame_id != goal.tip_frame || !pose_computation.frame_pose.matrix().allFinite())
       {return fail("POSE_TASK_INACTIVE", "Selected task cannot evaluate the requested end-effector frame");}
       const auto measured = pose_computation.frame_pose;
-      const Vector6 tracking = error(desired, measured, axes);
-      std::copy(tracking.data(), tracking.data() + 6, out.tracking_error.begin());
+      const Vector6 raw_tracking = error(desired, measured, axes);
+      const Vector6 tracking = error(desired, measured, axes, activation);
+      std::copy(raw_tracking.data(), raw_tracking.data() + 6, out.tracking_error.begin());
       for (const auto & task : snapshot.tasks) {
         if (!StpikTaskAccess::safety(*task, state, options.numerical_tolerance, out)) {
-          return fail(out.code, "Safety constraint violated: " + out.task_id + "/" + out.constraint);
+          return fail(out.code, out.message.empty() ?
+            "Safety constraint violated: " + out.task_id + "/" + out.constraint : out.message);
         }
       }
+      if (validate_tasks) {validate_tasks(computations);}
+      if (observe) {observe(state, time);}
       if (!tracking.allFinite()) {return fail("NONFINITE_TRACKING", "Invalid Cartesian tracking error");}
       if (time == 0.0 && !within(tracking, path_tolerance, options.numerical_tolerance)) {
         return fail("INITIAL_STATE_MISMATCH", "Trajectory start does not match the controller snapshot");
@@ -258,19 +308,35 @@ StpikAction::Result StpikCheck::run(StpikSnapshot snapshot, const StpikAction::G
       while (history.size() > 1 && time - history[1].time >= options.stall_window) {history.pop_front();}
       if (time - history.front().time >= options.stall_window) {
         const auto & old = history.front();
-        const Vector6 movement = error(measured, old.measured, axes);
-        const Vector6 demand = error(desired, old.desired, axes);
-        const bool position_requested = demand.head<3>().norm() >= options.min_position_progress ||
-          (tracking.head<3>().cwiseAbs().array() > goal_tolerance.head<3>().array()).any();
-        const bool orientation_requested = demand.tail<3>().norm() >= options.min_orientation_progress ||
-          (tracking.tail<3>().cwiseAbs().array() > goal_tolerance.tail<3>().array()).any();
-        const bool position_progress = movement.head<3>().norm() >= options.min_position_progress ||
-          old.tracking.head<3>().norm() - tracking.head<3>().norm() >= options.min_position_progress;
-        const bool orientation_progress = movement.tail<3>().norm() >= options.min_orientation_progress ||
-          old.tracking.tail<3>().norm() - tracking.tail<3>().norm() >= options.min_orientation_progress;
+        const Vector6 movement = error(measured, old.measured, axes, activation);
+        const Vector6 demand = error(desired, old.desired, axes, activation);
+        // Only demand progress on error outside the per-axis goal tolerances.
+        const Vector6 excess = (tracking.cwiseAbs() - goal_tolerance -
+          Vector6::Constant(options.numerical_tolerance)).cwiseMax(0.0);
+        const double position_excess = excess.head<3>().norm();
+        const double orientation_excess = excess.tail<3>().norm();
+        const bool position_requested = position_excess > 0.0;
+        const bool orientation_requested = orientation_excess > 0.0;
+        const double position_required = std::min(options.min_position_progress,
+          std::max(options.numerical_tolerance, 0.1 * position_excess));
+        const double orientation_required = std::min(options.min_orientation_progress,
+          std::max(options.numerical_tolerance, 0.1 * orientation_excess));
+        const bool position_progress = movement.head<3>().norm() >= position_required ||
+          old.tracking.head<3>().norm() - tracking.head<3>().norm() >= position_required;
+        const bool orientation_progress = movement.tail<3>().norm() >= orientation_required ||
+          old.tracking.tail<3>().norm() - tracking.tail<3>().norm() >= orientation_required;
         const bool position_stalled = position_requested && !position_progress;
         const bool orientation_stalled = orientation_requested && !orientation_progress;
-        if (position_stalled || orientation_stalled) {
+        if (!position_stalled) {position_stalled_since = -1.0;}
+        else if (position_stalled_since < 0.0) {position_stalled_since = time;}
+        if (!orientation_stalled) {orientation_stalled_since = -1.0;}
+        else if (orientation_stalled_since < 0.0) {orientation_stalled_since = time;}
+        // Confirm a stall over an additional full window, resetting on any progress.
+        const bool position_confirmed = position_stalled_since >= 0.0 &&
+          time - position_stalled_since + 1e-12 >= options.stall_window;
+        const bool orientation_confirmed = orientation_stalled_since >= 0.0 &&
+          time - orientation_stalled_since + 1e-12 >= options.stall_window;
+        if (position_confirmed || orientation_confirmed) {
           out.task_id = goal.task_id;
           out.constraint = position_stalled && orientation_stalled ? "position_and_orientation" :
             position_stalled ? "position" : "orientation";
@@ -283,12 +349,16 @@ StpikAction::Result StpikCheck::run(StpikSnapshot snapshot, const StpikAction::G
             << ", reference_delta_m=" << demand.head<3>().norm()
             << ", measured_delta_m=" << movement.head<3>().norm()
             << ", error_reduction_m=" << old.tracking.head<3>().norm() - tracking.head<3>().norm()
-            << ", minimum_progress_m=" << options.min_position_progress << "}"
+            << ", minimum_progress_m=" << position_required
+            << ", configured_maximum_progress_m=" << options.min_position_progress
+            << ", error_outside_tolerance_m=" << position_excess << "}"
             << "; orientation{requested=" << orientation_requested
             << ", reference_delta_rad=" << demand.tail<3>().norm()
             << ", measured_delta_rad=" << movement.tail<3>().norm()
             << ", error_reduction_rad=" << old.tracking.tail<3>().norm() - tracking.tail<3>().norm()
-            << ", minimum_progress_rad=" << options.min_orientation_progress << "}";
+            << ", minimum_progress_rad=" << orientation_required
+            << ", configured_maximum_progress_rad=" << options.min_orientation_progress
+            << ", error_outside_tolerance_rad=" << orientation_excess << "}";
           return fail(rank_deficient ? "STALLED_SINGULARITY" : "STALLED",
             diagnostic.str());
         }

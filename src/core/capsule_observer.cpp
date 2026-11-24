@@ -174,8 +174,46 @@ CapsuleObserver::CapsuleObserver(const std::vector<std::shared_ptr<TaskBase>> & 
       rate = std::max(rate, tilt->publish_marker_rate());
       tilt_limits_entries_.push_back(std::move(entry));
     }
+    if (auto pose_limits = std::dynamic_pointer_cast<FramePoseLimitsTask>(task)) {
+      PoseLimitsEntry entry;
+      entry.task = pose_limits;
+      entry.publish_period = std::chrono::nanoseconds(
+        static_cast<int64_t>(1e9 / pose_limits->publish_marker_rate()));
+      entry.next_publish = std::chrono::steady_clock::now();
+      entry.publisher = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+        host_name + "/" + task->id() + "/limits_markers", rclcpp::QoS(1).reliable().durability_volatile());
+      rate = std::max(rate, pose_limits->publish_marker_rate());
+      pose_limits_entries_.push_back(std::move(entry));
+    }
+    auto configure_debug_entry = [&](auto & entry, const auto & typed_task) {
+        entry.task = typed_task;
+        entry.publish_period = std::chrono::nanoseconds(
+          static_cast<int64_t>(1e9 / typed_task->publish_marker_rate()));
+        entry.next_publish = std::chrono::steady_clock::now();
+        entry.publisher = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+          host_name + "/" + task->id() + "/limits_markers",
+          rclcpp::QoS(1).reliable().durability_volatile());
+        rate = std::max(rate, typed_task->publish_marker_rate());
+      };
+    if (auto position_norm = std::dynamic_pointer_cast<FramePositionNormLimitsTask>(task)) {
+      PositionNormEntry entry;
+      configure_debug_entry(entry, position_norm);
+      position_norm_entries_.push_back(std::move(entry));
+    }
+    if (auto orientation_norm = std::dynamic_pointer_cast<FrameOrientationNormLimitsTask>(task)) {
+      OrientationNormEntry entry;
+      configure_debug_entry(entry, orientation_norm);
+      orientation_norm_entries_.push_back(std::move(entry));
+    }
+    if (auto manipulability = std::dynamic_pointer_cast<ArmManipulabilityTask>(task)) {
+      ManipulabilityEntry entry;
+      configure_debug_entry(entry, manipulability);
+      manipulability_entries_.push_back(std::move(entry));
+    }
   }
-  if (entries_.empty() && limits_entries_.empty() && tilt_limits_entries_.empty()) {return;}
+  if (entries_.empty() && limits_entries_.empty() && tilt_limits_entries_.empty() &&
+    pose_limits_entries_.empty() && position_norm_entries_.empty() &&
+    orientation_norm_entries_.empty() && manipulability_entries_.empty()) {return;}
   rclcpp::ExecutorOptions executor_options;
   executor_options.context = context;
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>(executor_options);
@@ -212,6 +250,38 @@ CapsuleObserver::~CapsuleObserver()
     if (entry.visible && rclcpp::ok(node_->get_node_base_interface()->get_context())) {
       try {entry.publisher->publish(entry.renderer->clear());}
       catch (const std::exception &) {}
+    }
+  }
+  for (auto & entry : pose_limits_entries_) {
+    if (entry.visible && rclcpp::ok(node_->get_node_base_interface()->get_context())) {
+      try {
+        entry.publisher->publish(delete_frame_pose_limits_markers(
+          entry.task->world_frame(), entry.task->id()));
+      } catch (const std::exception &) {}
+    }
+  }
+  for (auto & entry : position_norm_entries_) {
+    if (entry.visible && rclcpp::ok(node_->get_node_base_interface()->get_context())) {
+      try {
+        entry.publisher->publish(delete_frame_position_norm_markers(
+          entry.task->world_frame(), entry.task->id()));
+      } catch (const std::exception &) {}
+    }
+  }
+  for (auto & entry : orientation_norm_entries_) {
+    if (entry.visible && rclcpp::ok(node_->get_node_base_interface()->get_context())) {
+      try {
+        entry.publisher->publish(delete_frame_orientation_norm_markers(
+          entry.task->world_frame(), entry.task->id()));
+      } catch (const std::exception &) {}
+    }
+  }
+  for (auto & entry : manipulability_entries_) {
+    if (entry.visible && rclcpp::ok(node_->get_node_base_interface()->get_context())) {
+      try {
+        entry.publisher->publish(delete_arm_manipulability_markers(
+          entry.task->world_frame(), entry.task->id()));
+      } catch (const std::exception &) {}
     }
   }
 }
@@ -290,6 +360,58 @@ void CapsuleObserver::tick()
     entry.next_publish += entry.publish_period * (1 + (now - entry.next_publish) / entry.publish_period);
     entry.visible = true;
   }
+  for (auto & entry : pose_limits_entries_) {
+    if (const auto * next = entry.task->consume_snapshot()) {entry.snapshot = next;}
+    const bool display = entry.task->debug() && entry.snapshot &&
+      entry.snapshot->visualization_state == entry.task->marker_visibility_state() &&
+      entry.snapshot->visualization_enabled && entry.snapshot->valid &&
+      now - entry.snapshot->captured <= std::chrono::duration<double>(
+        std::max(1.0, 2.0 / entry.task->publish_marker_rate()));
+    if (!display) {
+      if (entry.visible) {
+        entry.publisher->publish(delete_frame_pose_limits_markers(
+          entry.task->world_frame(), entry.task->id()));
+        entry.visible = false;
+      }
+      continue;
+    }
+    if (now < entry.next_publish) {continue;}
+    entry.publisher->publish(frame_pose_limits_markers(*entry.snapshot,
+      entry.task->world_frame(), entry.task->id(), entry.task->publish_marker_rate()));
+    entry.next_publish += entry.publish_period * (1 + (now - entry.next_publish) / entry.publish_period);
+    entry.visible = true;
+  }
+  // Same display/clear/schedule rules as the frame pose limits markers.
+  auto tick_debug_entry = [&now](auto & entry, const auto & render, const auto & clear) {
+      if (const auto * next = entry.task->consume_snapshot()) {entry.snapshot = next;}
+      const bool display = entry.task->debug() && entry.snapshot &&
+        entry.snapshot->visualization_state == entry.task->marker_visibility_state() &&
+        entry.snapshot->visualization_enabled && entry.snapshot->valid &&
+        now - entry.snapshot->captured <= std::chrono::duration<double>(
+          std::max(1.0, 2.0 / entry.task->publish_marker_rate()));
+      if (!display) {
+        if (entry.visible) {
+          entry.publisher->publish(clear(entry.task->world_frame(), entry.task->id()));
+          entry.visible = false;
+        }
+        return;
+      }
+      if (now < entry.next_publish) {return;}
+      entry.publisher->publish(render(*entry.snapshot,
+        entry.task->world_frame(), entry.task->id(), entry.task->publish_marker_rate()));
+      entry.next_publish += entry.publish_period *
+        (1 + (now - entry.next_publish) / entry.publish_period);
+      entry.visible = true;
+    };
+  for (auto & entry : position_norm_entries_) {
+    tick_debug_entry(entry, frame_position_norm_markers, delete_frame_position_norm_markers);
+  }
+  for (auto & entry : orientation_norm_entries_) {
+    tick_debug_entry(entry, frame_orientation_norm_markers, delete_frame_orientation_norm_markers);
+  }
+  for (auto & entry : manipulability_entries_) {
+    tick_debug_entry(entry, arm_manipulability_markers, delete_arm_manipulability_markers);
+  }
 }
 
 void declare_joint_limits_marker_parameters(
@@ -329,10 +451,25 @@ rcl_interfaces::msg::SetParametersResult validate_joint_limits_marker_parameter_
   for (const auto & task : tasks) {
     const auto limits = std::dynamic_pointer_cast<JointLimitsTask>(task);
     const auto tilt = std::dynamic_pointer_cast<StabilizeLimitsTask>(task);
-    if (!limits && !tilt) {continue;}
+    const auto pose_limits = std::dynamic_pointer_cast<FramePoseLimitsTask>(task);
+    const auto position_norm = std::dynamic_pointer_cast<FramePositionNormLimitsTask>(task);
+    const auto orientation_norm = std::dynamic_pointer_cast<FrameOrientationNormLimitsTask>(task);
+    const auto manipulability = std::dynamic_pointer_cast<ArmManipulabilityTask>(task);
+    const bool norm_task = position_norm || orientation_norm;
+    if (!limits && !tilt && !pose_limits && !norm_task && !manipulability) {continue;}
     const std::string prefix = "tasks." + task->id() + ".";
-    const std::string toggle = tilt ? "debug" : "publish_limits_marker";
-    const std::string rate = tilt ? "publish_marker_rate" : "limits_marker_publish_rate";
+    const bool debug_task = tilt || pose_limits || norm_task || manipulability;
+    if (norm_task) {
+      for (const auto & parameter : parameters) {
+        if (parameter.get_name() == prefix + "always_active") {
+          result.successful = false;
+          result.reason = parameter.get_name() + " requires reloading the controller";
+          return result;
+        }
+      }
+    }
+    const std::string toggle = debug_task ? "debug" : "publish_limits_marker";
+    const std::string rate = debug_task ? "publish_marker_rate" : "limits_marker_publish_rate";
     for (const auto & parameter : parameters) {
       if (parameter.get_name() == prefix + toggle &&
         parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
@@ -350,12 +487,21 @@ rcl_interfaces::msg::SetParametersResult validate_joint_limits_marker_parameter_
     for (const auto & task : tasks) {
       const auto limits = std::dynamic_pointer_cast<JointLimitsTask>(task);
       const auto tilt = std::dynamic_pointer_cast<StabilizeLimitsTask>(task);
-      if (!limits && !tilt) {continue;}
-      const std::string toggle = tilt ? "debug" : "publish_limits_marker";
+      const auto pose_limits = std::dynamic_pointer_cast<FramePoseLimitsTask>(task);
+      const auto position_norm = std::dynamic_pointer_cast<FramePositionNormLimitsTask>(task);
+      const auto orientation_norm = std::dynamic_pointer_cast<FrameOrientationNormLimitsTask>(task);
+      const auto manipulability = std::dynamic_pointer_cast<ArmManipulabilityTask>(task);
+      if (!limits && !tilt && !pose_limits && !position_norm && !orientation_norm &&
+        !manipulability) {continue;}
+      const std::string toggle = limits ? "publish_limits_marker" : "debug";
       for (const auto & parameter : parameters) {
         if (parameter.get_name() == "tasks." + task->id() + "." + toggle) {
           if (limits) {limits->set_publish_limits_marker(parameter.as_bool());}
-          else {tilt->set_debug(parameter.as_bool());}
+          else if (tilt) {tilt->set_debug(parameter.as_bool());}
+          else if (pose_limits) {pose_limits->set_debug(parameter.as_bool());}
+          else if (position_norm) {position_norm->set_debug(parameter.as_bool());}
+          else if (orientation_norm) {orientation_norm->set_debug(parameter.as_bool());}
+          else {manipulability->set_debug(parameter.as_bool());}
         }
       }
     }

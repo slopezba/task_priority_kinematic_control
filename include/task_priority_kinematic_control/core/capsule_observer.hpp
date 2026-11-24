@@ -2,6 +2,10 @@
 #include "task_priority_kinematic_control/tasks/self_collision_avoidance_task.hpp"
 #include "task_priority_kinematic_control/tasks/joint_limits_task.hpp"
 #include "task_priority_kinematic_control/tasks/stabilize_limits_task.hpp"
+#include "task_priority_kinematic_control/tasks/frame_pose_limits_task.hpp"
+#include "task_priority_kinematic_control/tasks/frame_position_norm_limits_task.hpp"
+#include "task_priority_kinematic_control/tasks/frame_orientation_norm_limits_task.hpp"
+#include "task_priority_kinematic_control/tasks/arm_manipulability_task.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -22,6 +26,34 @@ visualization_msgs::msg::MarkerArray joint_limits_markers(
   const std::string & frame, const std::string & task_id);
 visualization_msgs::msg::MarkerArray delete_joint_limits_markers(
   const std::vector<std::string> & joint_names, const std::string & frame, const std::string & task_id);
+
+// FramePoseLimitsTask debug: allowed position box and orientation rings (world frame).
+visualization_msgs::msg::MarkerArray frame_pose_limits_markers(
+  const FramePoseLimitsSnapshot & snapshot, const std::string & frame,
+  const std::string & task_id, double publish_rate);
+visualization_msgs::msg::MarkerArray delete_frame_pose_limits_markers(
+  const std::string & frame, const std::string & task_id);
+
+// FramePositionNormLimitsTask debug: sphere / cylinder / slab region (world frame).
+visualization_msgs::msg::MarkerArray frame_position_norm_markers(
+  const FramePositionNormSnapshot & snapshot, const std::string & frame,
+  const std::string & task_id, double publish_rate);
+visualization_msgs::msg::MarkerArray delete_frame_position_norm_markers(
+  const std::string & frame, const std::string & task_id);
+
+// FrameOrientationNormLimitsTask debug: tilt cone / yaw ring and angle gauge (world frame).
+visualization_msgs::msg::MarkerArray frame_orientation_norm_markers(
+  const FrameOrientationNormSnapshot & snapshot, const std::string & frame,
+  const std::string & task_id, double publish_rate);
+visualization_msgs::msg::MarkerArray delete_frame_orientation_norm_markers(
+  const std::string & frame, const std::string & task_id);
+
+// ArmManipulabilityTask debug: manipulability ellipsoid at the tip coloured by state (world frame).
+visualization_msgs::msg::MarkerArray arm_manipulability_markers(
+  const ArmManipulabilitySnapshot & snapshot, const std::string & frame,
+  const std::string & task_id, double publish_rate);
+visualization_msgs::msg::MarkerArray delete_arm_manipulability_markers(
+  const std::string & frame, const std::string & task_id);
 
 // Allocate message storage once; updates reuse marker, string and point buffers.
 class StabilizeLimitsMarkerRenderer
@@ -79,10 +111,38 @@ private:
     std::chrono::steady_clock::time_point next_publish{};
     std::chrono::steady_clock::duration publish_period{};
   };
+  struct PoseLimitsEntry
+  {
+    std::shared_ptr<FramePoseLimitsTask> task;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr publisher;
+    const FramePoseLimitsSnapshot * snapshot = nullptr;
+    bool visible = false;
+    std::chrono::steady_clock::time_point next_publish{};
+    std::chrono::steady_clock::duration publish_period{};
+  };
+  // Generic debug-marker entry for tasks with a snapshot channel and debug flag.
+  template<class TaskT, class SnapshotT>
+  struct DebugMarkerEntry
+  {
+    std::shared_ptr<TaskT> task;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr publisher;
+    const SnapshotT * snapshot = nullptr;
+    bool visible = false;
+    std::chrono::steady_clock::time_point next_publish{};
+    std::chrono::steady_clock::duration publish_period{};
+  };
+  using PositionNormEntry = DebugMarkerEntry<FramePositionNormLimitsTask, FramePositionNormSnapshot>;
+  using OrientationNormEntry =
+    DebugMarkerEntry<FrameOrientationNormLimitsTask, FrameOrientationNormSnapshot>;
+  using ManipulabilityEntry = DebugMarkerEntry<ArmManipulabilityTask, ArmManipulabilitySnapshot>;
   void tick();
   std::vector<Entry> entries_;
   std::vector<LimitsEntry> limits_entries_;
   std::vector<TiltLimitsEntry> tilt_limits_entries_;
+  std::vector<PoseLimitsEntry> pose_limits_entries_;
+  std::vector<PositionNormEntry> position_norm_entries_;
+  std::vector<OrientationNormEntry> orientation_norm_entries_;
+  std::vector<ManipulabilityEntry> manipulability_entries_;
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   rclcpp::TimerBase::SharedPtr timer_;

@@ -1,16 +1,26 @@
 #include "task_priority_kinematic_control/core/stpik_check.hpp"
+#include <type_traits>
 #include "task_priority_kinematic_control/tasks/frame_pose_task.hpp"
+#include "task_priority_kinematic_control/tasks/frame_pose_limits_task.hpp"
+#include "task_priority_kinematic_control/tasks/frame_position_norm_limits_task.hpp"
+#include "task_priority_kinematic_control/tasks/frame_orientation_norm_limits_task.hpp"
+#include "task_priority_kinematic_control/tasks/arm_manipulability_task.hpp"
 #include "task_priority_kinematic_control/tasks/end_effector_pose_task.hpp"
 #include "task_priority_kinematic_control/tasks/end_effector_position_task.hpp"
 #include "task_priority_kinematic_control/tasks/end_effector_orientation_task.hpp"
 #include "task_priority_kinematic_control/tasks/end_effectors_relative_pose_task.hpp"
+#include "task_priority_kinematic_control/tasks/end_effectors_facing_task.hpp"
 #include "task_priority_kinematic_control/tasks/joint_nominal_task.hpp"
+#include "task_priority_kinematic_control/tasks/robot_nominal_task.hpp"
 #include "task_priority_kinematic_control/tasks/base_yaw_task.hpp"
 #include "task_priority_kinematic_control/tasks/joint_limits_task.hpp"
 #include "task_priority_kinematic_control/tasks/stabilize_limits_task.hpp"
 #include "task_priority_kinematic_control/tasks/self_collision_avoidance_task.hpp"
 #include "task_priority_kinematic_control/tasks/joint_trajectory_task.hpp"
 #include "task_priority_kinematic_control/tasks/base_pose_trajectory_task.hpp"
+
+#include "task_priority_kinematic_control/geometry/capsule_geometry.hpp"
+#include "task_priority_kinematic_control/geometry/plane_geometry.hpp"
 
 #include <iomanip>
 #include <sstream>
@@ -57,6 +67,22 @@ std::shared_ptr<TaskBase> StpikTaskAccess::copy(const TaskBase & task, std::stri
     auto out = std::make_shared<FramePoseTask>(source);
     return out;
   }
+  if (typeid(task) == typeid(FramePoseLimitsTask)) {
+    const auto & source = static_cast<const FramePoseLimitsTask &>(task);
+    return std::make_shared<FramePoseLimitsTask>(source);
+  }
+  if (typeid(task) == typeid(FramePositionNormLimitsTask)) {
+    const auto & source = static_cast<const FramePositionNormLimitsTask &>(task);
+    return std::make_shared<FramePositionNormLimitsTask>(source);
+  }
+  if (typeid(task) == typeid(FrameOrientationNormLimitsTask)) {
+    const auto & source = static_cast<const FrameOrientationNormLimitsTask &>(task);
+    return std::make_shared<FrameOrientationNormLimitsTask>(source);
+  }
+  if (typeid(task) == typeid(ArmManipulabilityTask)) {
+    const auto & source = static_cast<const ArmManipulabilityTask &>(task);
+    return std::make_shared<ArmManipulabilityTask>(source);
+  }
   if (typeid(task) == typeid(EndEffectorPoseTask)) {
     const auto & source = static_cast<const EndEffectorPoseTask &>(task);
     auto out = std::make_shared<EndEffectorPoseTask>(source);
@@ -77,10 +103,18 @@ std::shared_ptr<TaskBase> StpikTaskAccess::copy(const TaskBase & task, std::stri
     auto out = std::make_shared<EndEffectorsRelativePoseTask>(source);
     return out;
   }
+  if (typeid(task) == typeid(EndEffectorsFacingTask)) {
+    const auto & source = static_cast<const EndEffectorsFacingTask &>(task);
+    auto out = std::make_shared<EndEffectorsFacingTask>(source);
+    return out;
+  }
   if (typeid(task) == typeid(JointNominalTask)) {
     const auto & source = static_cast<const JointNominalTask &>(task);
     auto out = std::make_shared<JointNominalTask>(source);
     return out;
+  }
+  if (typeid(task) == typeid(RobotNominalTask)) {
+    return std::make_shared<RobotNominalTask>(static_cast<const RobotNominalTask &>(task));
   }
   if (typeid(task) == typeid(BaseYawTask)) {
     const auto & source = static_cast<const BaseYawTask &>(task);
@@ -268,6 +302,59 @@ std::string StpikTaskAccess::key(const TaskBase & task)
     append(out, source.tilt_threshold_);
     append(out, source.gains_);
   }
+  if (typeid(task) == typeid(FramePoseLimitsTask)) {
+    const auto & source = static_cast<const FramePoseLimitsTask &>(task);
+    append(out, source.frame_id_);
+    append(out, source.axes_);
+    append(out, source.threshold_.transpose());
+    append(out, source.alpha_.transpose());
+    append(out, source.delta_.transpose());
+    append(out, source.gains_.transpose());
+    append(out, source.eps_);
+    append(out, source.max_repulsive_velocity_);
+    append(out, source.has_target_);
+    if (source.has_target_) {
+      append(out, source.target_position_.transpose());
+      append(out, source.target_orientation_);
+    }
+    append(out, source.axis_active_);
+    append(out, source.axis_side_);
+  }
+  auto append_norm_task = [&out](const auto & source) {
+      append(out, source.frame_id_);
+      append(out, source.axes_);
+      append(out, source.limit_);
+      append(out, source.alpha_);
+      append(out, source.delta_);
+      append(out, source.gain_);
+      append(out, source.eps_);
+      append(out, source.max_velocity_);
+      append(out, source.always_active_);
+      append(out, source.has_target_);
+      if (source.has_target_) {
+        append(out, source.target_position_.transpose());
+        append(out, source.target_orientation_);
+      }
+      append(out, source.row_active_);
+    };
+  if (typeid(task) == typeid(FramePositionNormLimitsTask)) {
+    append_norm_task(static_cast<const FramePositionNormLimitsTask &>(task));
+  }
+  if (typeid(task) == typeid(FrameOrientationNormLimitsTask)) {
+    append_norm_task(static_cast<const FrameOrientationNormLimitsTask &>(task));
+  }
+  if (typeid(task) == typeid(ArmManipulabilityTask)) {
+    const auto & source = static_cast<const ArmManipulabilityTask &>(task);
+    append(out, source.frame_id_);
+    append(out, source.joint_names_);
+    append(out, source.w_min_);
+    append(out, source.w_des_);
+    append(out, source.gain_);
+    append(out, source.max_velocity_);
+    append(out, source.fd_step_);
+    append(out, source.gradient_epsilon_);
+    append(out, source.row_active_);
+  }
   if (typeid(task) == typeid(EndEffectorPoseTask)) {
     const auto & source = static_cast<const EndEffectorPoseTask &>(task);
     append(out, source.frame_id_);
@@ -294,6 +381,20 @@ std::string StpikTaskAccess::key(const TaskBase & task)
     append(out, source.target_relative_pose_);
     append(out, source.has_target_relative_pose_);
   }
+  if (typeid(task) == typeid(EndEffectorsFacingTask)) {
+    const auto & source = static_cast<const EndEffectorsFacingTask &>(task);
+    append(out, source.left_frame_);
+    append(out, source.right_frame_);
+    append(out, source.left_pointing_axis_.transpose());
+    append(out, source.right_pointing_axis_.transpose());
+    append(out, source.target_roll_);
+    append(out, source.target_distance_);
+    append(out, source.capture_roll_pending_);
+    append(out, source.capture_distance_pending_);
+    append(out, source.min_distance_);
+    append(out, source.gains_.transpose());
+    append(out, source.activation_.transpose());
+  }
   if (typeid(task) == typeid(JointNominalTask)) {
     const auto & source = static_cast<const JointNominalTask &>(task);
     append(out, source.joint_names_);
@@ -303,6 +404,20 @@ std::string StpikTaskAccess::key(const TaskBase & task)
     append(out, source.feedforward_);
     append(out, source.command_timeout_);
     if (source.feedforward_.norm() > 0.0) {append(out, source.command_time_);}
+  }
+  if (typeid(task) == typeid(RobotNominalTask)) {
+    const auto & source = static_cast<const RobotNominalTask &>(task);
+    append(out, source.joint_names_);
+    append(out, source.sync_tasks_);
+    append(out, source.gains_);
+    append(out, source.activation_);
+    append(out, source.timeout_);
+    append(out, source.has_reference_);
+    if (source.has_reference_) {
+      append(out, source.base_target_); append(out, source.base_rates_);
+      append(out, source.joint_target_); append(out, source.joint_velocity_);
+      append(out, source.reference_time_);
+    }
   }
   if (typeid(task) == typeid(BaseYawTask)) {
     const auto & source = static_cast<const BaseYawTask &>(task);
@@ -459,6 +574,11 @@ bool StpikTaskAccess::compatible(const StpikSnapshot & snapshot, const WholeBody
         pose->feedforward_timeout_)
       {reason = "A timed pose feedforward was live at snapshot capture; stop its sender and retry after expiry"; return false;}
     }
+    if (const auto * robot = dynamic_cast<const RobotNominalTask *>(task.get())) {
+      if (robot->has_reference_ &&
+        std::chrono::duration<double>(snapshot.captured - robot->reference_time_).count() <= robot->timeout_)
+      {reason = "A robot_nominal reference stream was live at snapshot capture; stop its sender and retry after expiry"; return false;}
+    }
     if (const auto * nominal = dynamic_cast<const JointNominalTask *>(task.get())) {
       if (nominal->feedforward_.norm() > 0.0 &&
         std::chrono::duration<double>(snapshot.captured - nominal->command_time_).count() < nominal->command_timeout_)
@@ -482,6 +602,225 @@ bool StpikTaskAccess::compatible(const StpikSnapshot & snapshot, const WholeBody
     }
   }
   return true;
+}
+
+bool StpikTaskAccess::joint_bounds(const std::vector<std::shared_ptr<TaskBase>> & tasks,
+  Eigen::VectorXd & lower, Eigen::VectorXd & upper)
+{
+  for (const auto & task : tasks) {
+    auto limits = std::dynamic_pointer_cast<JointLimitsTask>(task);
+    if (limits && limits->enabled()) {
+      lower = limits->lower_limits_; upper = limits->upper_limits_;
+      return lower.size() == upper.size() && lower.allFinite() && upper.allFinite() &&
+             (upper.array() > lower.array()).all();
+    }
+  }
+  return false;
+}
+
+bool StpikTaskAccess::tilt_bounds(const std::vector<std::shared_ptr<TaskBase>> & tasks,
+  Eigen::Vector2d & lower, Eigen::Vector2d & upper)
+{
+  for (const auto & task : tasks) {
+    auto limits = std::dynamic_pointer_cast<StabilizeLimitsTask>(task);
+    if (limits && limits->enabled() && limits->lower_limits_.size() >= 2 && limits->upper_limits_.size() >= 2) {
+      lower = limits->lower_limits_.head<2>(); upper = limits->upper_limits_.head<2>();
+      return lower.allFinite() && upper.allFinite() && (upper.array() > lower.array()).all();
+    }
+  }
+  return false;
+}
+
+bool StpikTaskAccess::posture_region(const TaskBase & task, PostureRegion & region, bool linearize)
+{
+  if (const auto * pose = dynamic_cast<const FramePoseLimitsTask *>(&task)) {
+    if (!pose->marker_valid_) {throw std::runtime_error("Unavailable pose region: " + task.id());}
+    region.error.resize(pose->rows_);
+    region.limit.resize(pose->rows_);
+    if (linearize) {region.jacobian.resize(pose->rows_, pose->dofs_);}
+    for (size_t axis = 0; axis < pose->axes_.size(); ++axis) {
+      if (!pose->axes_[axis]) {continue;}
+      const auto row = pose->axis_row_[axis];
+      region.error(row) = pose->last_error_(axis);
+      region.limit(row) = pose->threshold_(axis);
+      if (linearize) {region.jacobian.row(row) = pose->local_jacobian_.row(axis);}
+    }
+    return true;
+  }
+  const auto norm_region = [&](const auto & norm, Eigen::Index offset) {
+      if (!norm.marker_valid_) {throw std::runtime_error("Unavailable norm region: " + task.id());}
+      region.radial = true;
+      region.always_active = norm.always_active_;
+      region.limit = Eigen::VectorXd::Constant(1, norm.limit_);
+      if (!linearize) {
+        region.error = Eigen::VectorXd::Constant(1, norm.last_norm_);
+        return;
+      }
+      const Eigen::Matrix3d world_to_target = norm.target_orientation_.toRotationMatrix().transpose();
+      if constexpr (std::is_same_v<std::decay_t<decltype(norm)>, FramePositionNormLimitsTask>) {
+        region.error = world_to_target * (norm.target_position_ - norm.frame_.pose.translation());
+      } else {
+        region.error = norm.marker_error_;
+      }
+      region.jacobian = world_to_target * norm.frame_.jacobian.middleRows(offset, 3);
+      for (size_t axis = 0; axis < norm.axes_.size(); ++axis) {
+        if (norm.axes_[axis]) {continue;}
+        region.error(axis) = 0.0;
+        region.jacobian.row(axis).setZero();
+      }
+    };
+  if (const auto * position = dynamic_cast<const FramePositionNormLimitsTask *>(&task)) {
+    norm_region(*position, 0);
+    return true;
+  }
+  if (const auto * orientation = dynamic_cast<const FrameOrientationNormLimitsTask *>(&task)) {
+    norm_region(*orientation, 3);
+    return true;
+  }
+  return false;
+}
+
+std::vector<PreventiveMargin> StpikTaskAccess::preventive_margins(
+  const TaskBase & task, const WholeBodyState & state)
+{
+  std::vector<PreventiveMargin> out;
+  if (!task.enabled()) {return out;}
+  const auto add = [&](double distance, double activation, double release,
+      const Eigen::RowVectorXd & gradient) {
+      const double width = std::max(release - activation, 1e-6);
+      out.push_back({(release - distance) / width, -gradient / width});
+    };
+  if (const auto * limits = dynamic_cast<const JointLimitsTask *>(&task)) {
+    for (Eigen::Index j = 0; j < limits->lower_limits_.size(); ++j) {
+      if (limits->upper_limits_(j) <= limits->lower_limits_(j)) {continue;}
+      Eigen::RowVectorXd g = Eigen::RowVectorXd::Zero(limits->dofs_);
+      g(limits->base_dofs_ + j) = 1.0;
+      add(state.joint_positions(j) - limits->lower_limits_(j), limits->alpha_, limits->delta_, g);
+      add(limits->upper_limits_(j) - state.joint_positions(j), limits->alpha_, limits->delta_, -g);
+    }
+  }
+  if (const auto * limits = dynamic_cast<const StabilizeLimitsTask *>(&task)) {
+    const double cp = std::cos(state.base_rpy.y()), yaw = state.base_rpy.z();
+    if (std::abs(cp) < 1e-4) {return out;}  // Already rejected by safety().
+    Eigen::Matrix2d map;
+    map << std::cos(yaw) / cp, std::sin(yaw) / cp, -std::sin(yaw), std::cos(yaw);
+    for (int axis = 0; axis < 2; ++axis) {
+      Eigen::RowVectorXd g = Eigen::RowVectorXd::Zero(limits->dofs_);
+      for (size_t c = 0; c < limits->angular_columns_.size(); ++c) {
+        if (limits->angular_columns_[c] >= 0) {g(limits->angular_columns_[c]) = map(axis, c);}
+      }
+      add(state.base_rpy(axis) - limits->lower_limits_(axis), limits->alpha_, limits->delta_, g);
+      add(limits->upper_limits_(axis) - state.base_rpy(axis), limits->alpha_, limits->delta_, -g);
+    }
+  }
+  const auto norm_margin = [&](const auto & norm) {
+      if (norm.always_active_ || !norm.marker_valid_) {return;}
+      PostureRegion region;
+      posture_region(task, region, true);
+      const double sigma = region.error.norm();
+      Eigen::RowVectorXd g = Eigen::RowVectorXd::Zero(region.jacobian.cols());
+      if (sigma > 1e-9) {g = (region.error / sigma).transpose() * region.jacobian;}
+      // d(limit - ||error||)/dt = direction * J.
+      add(norm.limit_ - sigma, norm.alpha_, norm.delta_, g);
+    };
+  if (const auto * norm = dynamic_cast<const FramePositionNormLimitsTask *>(&task)) {norm_margin(*norm);}
+  if (const auto * norm = dynamic_cast<const FrameOrientationNormLimitsTask *>(&task)) {norm_margin(*norm);}
+  if (const auto * pose = dynamic_cast<const FramePoseLimitsTask *>(&task)) {
+    if (pose->marker_valid_) {
+      for (size_t axis = 0; axis < pose->axes_.size(); ++axis) {
+        if (!pose->axes_[axis]) {continue;}
+        const auto g = pose->local_jacobian_.row(axis).eval();
+        add(pose->threshold_(axis) - pose->last_error_(axis), pose->alpha_(axis), pose->delta_(axis), g);
+        add(pose->threshold_(axis) + pose->last_error_(axis), pose->alpha_(axis), pose->delta_(axis), -g);
+      }
+    }
+  }
+  if (const auto * collision = dynamic_cast<const SelfCollisionAvoidanceTask *>(&task)) {
+    // Compute every pair, including inactive rows whose runtime Jacobian is zero.
+    for (const auto & pair : collision->pairs_) {
+      const auto & a = collision->capsules_[pair[0]], & b = collision->capsules_[pair[1]];
+      const auto & a0 = collision->endpoints_[a.start_index], & a1 = collision->endpoints_[a.end_index];
+      const auto & b0 = collision->endpoints_[b.start_index], & b1 = collision->endpoints_[b.end_index];
+      const auto d = capsule_distance(a0.position, a1.position, b0.position, b1.position,
+        a.radius, b.radius, collision->parallel_epsilon_, collision->segment_length_epsilon_);
+      if (!d.valid || d.axis_distance <= collision->degenerate_axis_distance_) {continue;}
+      const Eigen::RowVectorXd g = ((d.q - d.p) / d.axis_distance).transpose() *
+        ((1 - d.t) * b0.jacobian + d.t * b1.jacobian - (1 - d.s) * a0.jacobian - d.s * a1.jacobian);
+      add(d.clearance, collision->activation_distance_, collision->release_distance_, g);
+    }
+    for (const auto & pair : collision->plane_pairs_) {
+      const auto & capsule = collision->capsules_[pair[0]];
+      const auto & plane = collision->planes_[pair[1]];
+      const auto & ref = collision->endpoints_[plane.reference_index].world;
+      const auto & a = collision->endpoints_[capsule.start_index].world;
+      const auto & b = collision->endpoints_[capsule.end_index].world;
+      const Eigen::Matrix3d rotation = ref.pose.rotation().transpose();
+      const Eigen::Vector3d ra = a.pose.translation() - ref.pose.translation();
+      const Eigen::Vector3d rb = b.pose.translation() - ref.pose.translation();
+      const auto d = capsule_plane_distance(rotation * ra, rotation * rb, capsule.radius,
+        plane.normal_axis, plane.allowed_sign, plane.position, plane.bounds_min, plane.bounds_max);
+      if (!d.valid || !d.intersects) {continue;}
+      Eigen::RowVectorXd g = Eigen::RowVectorXd::Zero(collision->jacobian_.cols());
+      for (Eigen::Index c = 0; c < g.size(); ++c) {
+        const Eigen::Vector3d ja = rotation * (a.jacobian.col(c).head<3>() -
+          ref.jacobian.col(c).head<3>() + ra.cross(ref.jacobian.col(c).tail<3>()));
+        const Eigen::Vector3d jb = rotation * (b.jacobian.col(c).head<3>() -
+          ref.jacobian.col(c).head<3>() + rb.cross(ref.jacobian.col(c).tail<3>()));
+        g(c) = d.gradient_a.dot(ja) + d.gradient_b.dot(jb);
+      }
+      add(d.clearance, collision->activation_distance_, collision->release_distance_, g);
+    }
+  }
+  return out;
+}
+
+double posture_limit_cost(
+  double distance, double activation, double preventive, bool active, double active_penalty)
+{
+  if (active) {
+    const double depth = std::clamp(
+      (activation - distance) / std::max(activation, 1e-12), 0.0, 1.0);
+    return active_penalty * (1.0 + depth * depth);
+  }
+  const double proximity = std::clamp(
+    (preventive - distance) / std::max(preventive - activation, 1e-12), 0.0, 1.0);
+  return proximity * proximity;
+}
+
+PostureSafetyCosts StpikTaskAccess::posture_safety_costs(
+  const TaskBase & task, const WholeBodyState & state, double active_penalty)
+{
+  PostureSafetyCosts costs;
+  if (!task.enabled()) {return costs;}
+  const auto bounded_cost = [&](double value, double lower, double upper,
+      double alpha, double delta, bool lower_active, bool upper_active) {
+      return std::max(
+        posture_limit_cost(value - lower, alpha, delta, lower_active, active_penalty),
+        posture_limit_cost(upper - value, alpha, delta, upper_active, active_penalty));
+    };
+  if (const auto * limits = dynamic_cast<const JointLimitsTask *>(&task)) {
+    for (Eigen::Index i = 0; i < limits->lower_limits_.size(); ++i) {
+      if (limits->upper_limits_(i) <= limits->lower_limits_(i)) {continue;}
+      costs.joints = std::max(costs.joints, bounded_cost(
+        state.joint_positions(i), limits->lower_limits_(i), limits->upper_limits_(i),
+        limits->alpha_, limits->delta_, limits->lower_active_[i], limits->upper_active_[i]));
+    }
+  }
+  if (const auto * limits = dynamic_cast<const StabilizeLimitsTask *>(&task)) {
+    for (Eigen::Index i = 0; i < 2; ++i) {
+      costs.stabilize = std::max(costs.stabilize, bounded_cost(
+        state.base_rpy(i), limits->lower_limits_(i), limits->upper_limits_(i),
+        limits->alpha_, limits->delta_, limits->lower_active_[i], limits->upper_active_[i]));
+    }
+  }
+  if (const auto * collision = dynamic_cast<const SelfCollisionAvoidanceTask *>(&task)) {
+    costs.self_collision = posture_limit_cost(
+      collision->last_.min_clearance - collision->safe_distance_,
+      collision->activation_distance_ - collision->safe_distance_,
+      collision->release_distance_ - collision->safe_distance_,
+      collision->last_.active_pairs > 0, active_penalty);
+  }
+  return costs;
 }
 
 bool StpikTaskAccess::safety(const TaskBase & task, const WholeBodyState & state,
@@ -517,14 +856,26 @@ bool StpikTaskAccess::safety(const TaskBase & task, const WholeBodyState & state
   if (const auto * collision = dynamic_cast<const SelfCollisionAvoidanceTask *>(&task)) {
     const auto & metric = collision->last_;
     result.minimum_clearance = std::min(result.minimum_clearance, metric.min_clearance);
+    const auto reject = [&](const std::string & code, size_t pair) {
+        result.code = code;
+        result.constraint = collision->collision_pair_name(pair);
+        std::ostringstream detail;
+        detail << "Collision task safety check failed; source=task; task=" << task.id()
+               << "; pair=" << result.constraint
+               << "; min_clearance=" << metric.min_clearance << " m"
+               << "; safe_distance=" << collision->safe_distance_ << " m"
+               << "; numerical_tolerance=" << tolerance
+               << "; invalid_geometry=" << metric.invalid_geometry
+               << "; degenerate_pairs=" << metric.degenerate_pairs
+               << "; stop_arms=" << metric.stop_arms;
+        result.message = detail.str();
+        return false;
+      };
     if (metric.invalid_geometry || metric.degenerate_pairs > 0 || metric.stop_arms) {
-      result.code = "COLLISION_GEOMETRY";
-      result.constraint = collision->collision_pair_name(metric.fault_pair);
-      return false;
+      return reject("COLLISION_GEOMETRY", metric.fault_pair);
     }
     if (metric.min_clearance < collision->safe_distance_ - tolerance) {
-      result.code = "COLLISION_CLEARANCE";
-      result.constraint = collision->collision_pair_name(metric.closest_pair); return false;
+      return reject("COLLISION_CLEARANCE", metric.closest_pair);
     }
   }
   result.task_id.clear();

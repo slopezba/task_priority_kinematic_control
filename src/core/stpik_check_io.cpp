@@ -4,7 +4,8 @@ namespace task_priority_kinematic_control
 {
 bool StpikCheckIO::same_request(const StpikAction::Goal & a, const StpikAction::Goal & b)
 {
-  return a.trajectory == b.trajectory && a.task_id == b.task_id && a.tip_frame == b.tip_frame &&
+  return a.trajectory == b.trajectory && a.samples == b.samples &&
+    a.nominal_joints == b.nominal_joints && a.nominal_base == b.nominal_base && a.task_id == b.task_id && a.tip_frame == b.tip_frame &&
     a.tolerance_orientation == b.tolerance_orientation && a.path_tolerance == b.path_tolerance &&
     a.goal_tolerance == b.goal_tolerance && a.goal_time_tolerance == b.goal_time_tolerance;
 }
@@ -59,7 +60,9 @@ void StpikCheckIO::complete(StpikAction::Result result)
   if (response->outcome == StpikAction::Result::FAIL && !handle_->is_canceling()) {
     auto feedback = std::make_shared<StpikAction::Feedback>();
     feedback->time_from_start = response->time_from_start;
-    const double total = request_.trajectory.duration + request_.goal_time_tolerance;
+    const double duration = request_.samples.empty() ?
+      request_.trajectory.duration : request_.samples.back().time_from_start;
+    const double total = duration + request_.goal_time_tolerance;
     feedback->progress = total > 0.0 ? std::clamp(response->time_from_start / total, 0.0, 1.0) : 1.0;
     feedback->message = response->code + ": " + response->message;
     handle_->publish_feedback(feedback);

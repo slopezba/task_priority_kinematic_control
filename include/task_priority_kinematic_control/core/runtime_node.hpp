@@ -12,6 +12,7 @@
 #include "task_priority_kinematic_control/core/whole_body_model.hpp"
 #include "task_priority_kinematic_control/kinematics/kinematics_backend.hpp"
 
+#include "task_priority_kinematic_control/msg/facing_target.hpp"
 #include "task_priority_kinematic_control/msg/hierarchy_state.hpp"
 #include "task_priority_kinematic_control/msg/solver_diagnostics.hpp"
 #include "task_priority_kinematic_control/srv/list_tasks.hpp"
@@ -103,6 +104,8 @@ private:
     task_target_subs_;
   std::map<std::string, rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr>
     task_joint_target_subs_;
+  std::map<std::string, rclcpp::Subscription<msg::FacingTarget>::SharedPtr>
+    task_facing_target_subs_;
   std::map<std::string, rclcpp::Subscription<trajectory_msgs::msg::JointTrajectory>::SharedPtr>
     task_joint_trajectory_subs_;
   std::map<std::string, rclcpp_action::Server<control_msgs::action::FollowJointTrajectory>::SharedPtr>

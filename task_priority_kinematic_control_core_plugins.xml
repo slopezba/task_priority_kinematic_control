@@ -36,6 +36,12 @@
     <description>Track the relative pose between two end-effectors.</description>
   </class>
   <class
+    name="task_priority_kinematic_control/EndEffectorsFacingTask"
+    type="task_priority_kinematic_control::EndEffectorsFacingTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Make both end-effectors face each other: pointing axes along the line, relative roll and distance.</description>
+  </class>
+  <class
     name="task_priority_kinematic_control/EndEffectorPlanRelativePoseTask"
     type="task_priority_kinematic_control::EndEffectorPlanRelativePoseTask"
     base_class_type="task_priority_kinematic_control::TaskBase">
@@ -48,10 +54,34 @@
     <description>Track full pose of an arbitrary frame, including the base frame.</description>
   </class>
   <class
+    name="task_priority_kinematic_control/FramePoseLimitsTask"
+    type="task_priority_kinematic_control::FramePoseLimitsTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Set-based pose task: keep a frame inside a per-axis threshold box around a target pose.</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/FramePositionNormLimitsTask"
+    type="task_priority_kinematic_control::FramePositionNormLimitsTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>One-row position-norm task for any frame: keep ||p_target - p|| (optionally masked) below a radius (set-based) or drive it to zero (always_active).</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/FrameOrientationNormLimitsTask"
+    type="task_priority_kinematic_control::FrameOrientationNormLimitsTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>One-row orientation-norm task for any frame: keep the (optionally masked) rotation angle to the target below a limit (set-based) or drive it to zero (always_active).</description>
+  </class>
+  <class
     name="task_priority_kinematic_control/JointNominalTask"
     type="task_priority_kinematic_control::JointNominalTask"
     base_class_type="task_priority_kinematic_control::TaskBase">
     <description>Bias the solution toward a nominal joint configuration.</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/RobotNominalTask"
+    type="task_priority_kinematic_control::RobotNominalTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>Low-priority streamed whole-body nominal (base pose and both arms).</description>
   </class>
   <class
     name="task_priority_kinematic_control/JointTrajectoryTask"
@@ -88,5 +118,11 @@
     type="task_priority_kinematic_control::SelfCollisionAvoidanceTask"
     base_class_type="task_priority_kinematic_control::TaskBase">
     <description>Repel simplified collision geometry away from self-collision.</description>
+  </class>
+  <class
+    name="task_priority_kinematic_control/ArmManipulabilityTask"
+    type="task_priority_kinematic_control::ArmManipulabilityTask"
+    base_class_type="task_priority_kinematic_control::TaskBase">
+    <description>One-row set-based task that raises the position manipulability sqrt(det(Jp Jp^T)) of one arm along its normalized gradient.</description>
   </class>
 </library>

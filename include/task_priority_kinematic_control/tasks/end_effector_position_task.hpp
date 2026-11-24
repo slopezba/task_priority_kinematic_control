@@ -1,11 +1,11 @@
 #pragma once
 
-#include "task_priority_kinematic_control/tasks/task_base.hpp"
+#include "task_priority_kinematic_control/tasks/pose_task_common.hpp"
 
 namespace task_priority_kinematic_control
 {
 
-class EndEffectorPositionTask : public TaskBaseCommon
+class EndEffectorPositionTask : public PoseTaskCommon
 {
   friend class StpikTaskAccess;
 public:

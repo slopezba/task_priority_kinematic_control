@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "pluginlib/class_list_macros.hpp"
+#include "task_priority_kinematic_control/tasks/end_effectors_facing_task.hpp"
 #include "lifecycle_msgs/msg/state.hpp"
 
 namespace task_priority_kinematic_control
@@ -344,12 +345,31 @@ void TaskPriorityController::declare_task_parameters()
     } else if (get_node()->get_parameter(prefix + "plugin").as_string() ==
       "task_priority_kinematic_control/JointLimitsTask") {
       declare_joint_limits_marker_parameters(get_node()->get_node_parameters_interface(), prefix);
-    } else if (stabilize_limits) {
+    } else if (stabilize_limits || get_node()->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/FramePoseLimitsTask") {
+      // Same debug/publish_marker_rate parameters for the frame pose limits markers.
+      declare_stabilize_limits_debug_parameters(get_node()->get_node_parameters_interface(), prefix);
+    } else if (get_node()->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/FramePositionNormLimitsTask" ||
+      get_node()->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/FrameOrientationNormLimitsTask")
+    {
+      declare_stabilize_limits_debug_parameters(get_node()->get_node_parameters_interface(), prefix);
+      auto_declare_if_missing(this, prefix + "always_active", false);
+    } else if (get_node()->get_parameter(prefix + "plugin").as_string() ==
+      "task_priority_kinematic_control/ArmManipulabilityTask")
+    {
       declare_stabilize_limits_debug_parameters(get_node()->get_node_parameters_interface(), prefix);
     }
     auto_declare_if_missing(this, prefix + "joint_names", std::vector<std::string>{});
+    auto_declare_if_missing(this, prefix + "sync_tasks", std::vector<std::string>{});
     auto_declare_if_missing(this, prefix + "target", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "activation", std::vector<int64_t>{});
+    // FramePoseLimitsTask: 6-DoF axis mask and per-axis set-based bounds.
+    auto_declare_if_missing(this, prefix + "axes", std::vector<bool>{});
+    auto_declare_if_missing(this, prefix + "threshold", std::vector<double>{});
+    auto_declare_if_missing(this, prefix + "activation_margin", std::vector<double>{});
+    auto_declare_if_missing(this, prefix + "release_margin", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "target_yaw", 0.0);
     auto_declare_if_missing(this, prefix + "goal_tolerance", std::vector<double>{});
     auto_declare_if_missing(this, prefix + "trajectory_timeout", 0.5);
@@ -1017,6 +1037,12 @@ void TaskPriorityController::configure_external_interfaces()
         get_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE &&
         state_.navigation_valid && navigation_sample_.is_fresh(navigator_timeout_);
     });
+  posture_action_ = std::make_unique<PostureAction>(get_node(),task_mutex_,state_,model_,backend_,solver_,
+    *task_manager_,cartesian_coordinator_,[this] {
+      return trajectory_execution_ready_ && trajectory_action_slots_.empty() && !parameter_update_pending_.load() &&
+        get_state().id()==lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE &&
+        state_.joints_valid && state_.navigation_valid && navigation_sample_.is_fresh(navigator_timeout_);
+    });
   stpik_check_io_.configure_host(get_node().get(), task_mutex_, state_, model_, backend_, solver_,
     task_manager_, [this]() {
       return trajectory_execution_ready_ && trajectory_action_slots_.empty() &&
@@ -1027,6 +1053,7 @@ void TaskPriorityController::configure_external_interfaces()
   manual_task_io_.configure(get_node().get(), task_manager_->tasks(), task_mutex_,
     [this](const std::string & task, std::string & message) {return task_manager_->allow_mutation(task, message);});
   task_joint_target_subs_.clear();
+  task_facing_target_subs_.clear();
   task_joint_trajectory_subs_.clear();
   task_joint_trajectory_action_servers_.clear();
   task_state_pubs_.clear();
@@ -1058,6 +1085,25 @@ void TaskPriorityController::configure_external_interfaces()
           "task_priority/tasks/" + task_id + "/joint_target",
           rclcpp::SystemDefaultsQoS(),
           joint_target_callback);
+      } else if (std::dynamic_pointer_cast<EndEffectorsFacingTask>(task)) {
+        task_facing_target_subs_[task_id] = get_node()->create_subscription<msg::FacingTarget>(
+          "task_priority/tasks/" + task_id + "/facing_target",
+          rclcpp::SystemDefaultsQoS(),
+          [this, task_id](const msg::FacingTarget::SharedPtr msg)
+          {
+            if (!msg) {
+              return;
+            }
+            std::string message;
+            std::scoped_lock lock(task_mutex_);
+            if (!task_manager_->set_task_facing_target(task_id, *msg, message)) {
+              RCLCPP_WARN(
+                get_node()->get_logger(),
+                "Rejected facing target for task '%s': %s",
+                task_id.c_str(),
+                message.c_str());
+            }
+          });
       } else if (std::dynamic_pointer_cast<JointTrajectoryTask>(task)) {
         const auto trajectory_topic = "task_priority/tasks/" + task_id + "/joint_trajectory";
         task_joint_trajectory_subs_[task_id] = get_node()->create_subscription<JointTrajectory>(
@@ -1297,6 +1343,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_activate(
 controller_interface::CallbackReturn TaskPriorityController::on_deactivate(
   const rclcpp_lifecycle::State &)
 {
+  if(posture_action_) posture_action_->interrupt();
   stpik_check_io_.cancel_pending();
   stop_task_trajectory_goals("Task priority controller deactivated");
   {
@@ -1317,6 +1364,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_deactivate(
 controller_interface::CallbackReturn TaskPriorityController::on_cleanup(
   const rclcpp_lifecycle::State &)
 {
+  posture_action_.reset();
   stpik_check_io_.stop();
   stop_task_trajectory_goals("Task priority controller cleaned up");
   {
@@ -1338,6 +1386,7 @@ controller_interface::CallbackReturn TaskPriorityController::on_cleanup(
 controller_interface::CallbackReturn TaskPriorityController::on_shutdown(
   const rclcpp_lifecycle::State &)
 {
+  posture_action_.reset();
   stpik_check_io_.stop();
   stop_task_trajectory_goals("Task priority controller shut down");
   {

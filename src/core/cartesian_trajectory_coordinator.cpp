@@ -1,7 +1,10 @@
 #include "task_priority_kinematic_control/core/cartesian_trajectory_coordinator.hpp"
+#include "task_priority_kinematic_control/core/initial_posture.hpp"
 #include "task_priority_kinematic_control/tasks/pose_task_common.hpp"
 #include "task_priority_kinematic_control/tasks/frame_pose_task.hpp"
+#include "task_priority_kinematic_control/tasks/robot_nominal_task.hpp"
 #include "task_priority_kinematic_control/tasks/end_effectors_relative_pose_task.hpp"
+#include "task_priority_kinematic_control/tasks/end_effectors_facing_task.hpp"
 #include "task_priority_kinematic_control/tasks/end_effector_plan_relative_pose_task.hpp"
 
 #include <algorithm>
@@ -57,7 +60,7 @@ void CartesianTrajectoryCoordinator::configure(TaskManager & manager,
     throw std::invalid_argument("Other-arm tracking tolerance must be finite and nonnegative");
   }
   manager_ = &manager; model_ = model; clock_ = clock; settings_ = settings;
-  snapshots_.clear(); status_ = Status();
+  posture_reserved_ = false; snapshots_.clear(); status_ = Status();
 }
 
 std::shared_ptr<TaskBase> CartesianTrajectoryCoordinator::find_task(const std::string & id) const
@@ -127,7 +130,7 @@ bool CartesianTrajectoryCoordinator::validate_ordered_goal(const Action::Goal & 
   const WholeBodyState & state, const KinematicsBackend & backend, std::string & error) const
 {
   if (!manager_ || !model_ || !clock_) {error = "Coordinated execution is not configured"; return false;}
-  if (status_.running) {error = "A coordinated trajectory is already running"; return false;}
+  if (posture_reserved_ || status_.running) {error = "A coordinated trajectory is already running"; return false;}
   if (!state.navigation_valid || !state.joints_valid || !state.base_position.allFinite() ||
     !state.base_rpy.allFinite() || !state.joint_positions.allFinite())
   {error = "Current whole-body state is unavailable"; return false;}
@@ -467,19 +470,44 @@ void CartesianTrajectoryCoordinator::cancel_to_measured(const WholeBodyState & s
   status_.canceled = canceled; status_.holding = true; status_.message = reason;
 }
 
+bool CartesianTrajectoryCoordinator::reserve_posture(const std::string & tip_task)
+{
+  if (!manager_ || owns_tasks()) {return false;}
+  const auto commands = posture_command_tasks(manager_->tasks(), tip_task);
+  if (commands.empty()) {return false;}
+  for (const auto & task : commands) {
+    snapshots_.push_back({task, task->enabled(), task->priority(), task->build_status().joint_activation});
+  }
+  base_task_.reset(); joint_task_.reset(); other_hold_task_.reset();
+  posture_reserved_ = true;
+  return true;
+}
+
 bool CartesianTrajectoryCoordinator::release(const WholeBodyState & state,
-  const KinematicsBackend & backend, std::string & message)
+  const KinematicsBackend & backend, std::string & message, bool keep_posture_targets)
 {
   if (!owns_tasks()) {message = "No coordinated trajectory reservation"; return true;}
   if (joint_task_) {joint_task_->restore_execution_defaults();}
   for (const auto & snapshot : snapshots_) {
     auto & task = snapshot.task;
+    if (posture_reserved_ && keep_posture_targets) {
+      task->set_enabled(snapshot.enabled);
+      if (std::dynamic_pointer_cast<JointNominalTask>(task) ||
+        std::dynamic_pointer_cast<RobotNominalTask>(task))
+      {
+        std::string ignored;
+        task->set_joint_activation(snapshot.joint_activation, ignored);
+      }
+      continue;
+    }
     task->set_enabled(false); task->reset(); task->set_priority(snapshot.priority);
     if (auto nominal = std::dynamic_pointer_cast<JointNominalTask>(task)) {
       std::vector<double> values;
       for (const auto & name : nominal->build_status().joint_names) {values.push_back(state.joint_positions(model_->joint_index(name)));}
       std::string ignored; nominal->clear_velocity(); nominal->set_joint_target(values, ignored);
       nominal->set_joint_activation(snapshot.joint_activation, ignored);
+    } else if (std::dynamic_pointer_cast<RobotNominalTask>(task)) {
+      std::string ignored; task->set_joint_activation(snapshot.joint_activation, ignored);
     }
     task->set_enabled(snapshot.enabled);
     if (auto pose_task = std::dynamic_pointer_cast<PoseTaskCommon>(task)) {
@@ -492,12 +520,15 @@ bool CartesianTrajectoryCoordinator::release(const WholeBodyState & state,
       } catch (const std::exception &) {task->reset();}
     } else if (auto relative = std::dynamic_pointer_cast<EndEffectorsRelativePoseTask>(task)) {
       try {relative->capture_measured_relative_pose(backend);} catch (const std::exception &) {task->reset();}
+    } else if (auto facing = std::dynamic_pointer_cast<EndEffectorsFacingTask>(task)) {
+      try {facing->capture_measured_target(backend);} catch (const std::exception &) {task->reset();}
     } else if (auto planned = std::dynamic_pointer_cast<EndEffectorPlanRelativePoseTask>(task)) {
       try {planned->capture_measured_relative_pose(backend);} catch (const std::exception &) {task->reset();}
     }
   }
-  snapshots_.clear(); status_.running = false; status_.holding = false;
-  message = "Coordinated reservation released; task targets captured at measured state";
+  posture_reserved_ = false; snapshots_.clear(); status_.running = false; status_.holding = false;
+  message = keep_posture_targets ? "Posture reservation released; optimized references retained" :
+    "Coordinated reservation released; task targets captured at measured state";
   return true;
 }
 
@@ -510,6 +541,7 @@ void CartesianTrajectoryCoordinator::shutdown(const WholeBodyState & state,
 
 bool CartesianTrajectoryCoordinator::reserved(const std::string & task_id) const
 {
+  if (posture_reserved_) {return true;}
   if (task_id == "*") {return owns_tasks();}
   return std::any_of(snapshots_.begin(), snapshots_.end(), [&](const Snapshot & s) {return s.task->id() == task_id;});
 }
@@ -517,6 +549,7 @@ bool CartesianTrajectoryCoordinator::reserved(const std::string & task_id) const
 bool CartesianTrajectoryCoordinator::allow_mutation(const std::string & task_id,
   const WholeBodyState & state, const KinematicsBackend & backend, std::string & message)
 {
+  if (posture_reserved_) {message = "Posture preparation owns the controller"; return false;}
   if (!reserved(task_id)) {return true;}
   if (status_.running) {message = "Task is reserved by coordinated Cartesian execution"; return false;}
   return release(state, backend, message);

@@ -10,6 +10,10 @@ find_package(ament_index_cpp REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(controller_interface REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(osqp_vendor REQUIRED)
+find_package(osqp REQUIRED)
+find_package(moveit_core REQUIRED)
+find_package(srdfdom REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(Threads REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -37,6 +41,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TaskGainUpdate.msg"
   "msg/HierarchyState.msg"
   "msg/SolverDiagnostics.msg"
+  "msg/FacingTarget.msg"
   "srv/SetTaskEnabled.srv"
   "srv/SetTaskDisabled.srv"
   "srv/SetSolverConfig.srv"
@@ -57,8 +62,15 @@ add_library(${core_target} SHARED
   src/geometry/plane_geometry.cpp
   src/core/capsule_observer.cpp
   src/core/stabilize_limits_markers.cpp
+  src/core/frame_pose_limits_markers.cpp
+  src/core/frame_position_norm_markers.cpp
+  src/core/frame_orientation_norm_markers.cpp
+  src/core/arm_manipulability_markers.cpp
   src/core/stpik_snapshot.cpp
   src/core/stpik_check.cpp
+  src/core/initial_posture.cpp
+  src/core/nominal_trajectory.cpp
+  src/core/posture_action.cpp
   src/core/stpik_check_io.cpp
   src/core/task_manager.cpp
   src/core/cartesian_trajectory_coordinator.cpp
@@ -72,9 +84,15 @@ add_library(${core_target} SHARED
   src/tasks/end_effector_orientation_task.cpp
   src/tasks/end_effector_pose_task.cpp
   src/tasks/end_effectors_relative_pose_task.cpp
+  src/tasks/end_effectors_facing_task.cpp
   src/tasks/end_effector_plan_relative_pose_task.cpp
   src/tasks/frame_pose_task.cpp
+  src/tasks/frame_pose_limits_task.cpp
+  src/tasks/frame_position_norm_limits_task.cpp
+  src/tasks/frame_orientation_norm_limits_task.cpp
   src/tasks/joint_nominal_task.cpp
+  src/tasks/robot_nominal_task.cpp
+  src/tasks/arm_manipulability_task.cpp
   src/tasks/joint_trajectory_task.cpp
   src/tasks/base_pose_trajectory_task.cpp
   src/tasks/joint_limits_task.cpp
@@ -95,9 +113,12 @@ target_include_directories(${core_target} PUBLIC
 target_link_libraries(${core_target}
   Eigen3::Eigen
   Threads::Threads
+  osqp::osqp
 )
 
 ament_target_dependencies(${core_target}
+  srdfdom
+  moveit_core
   controller_interface
   ament_index_cpp
   control_msgs
@@ -169,6 +190,10 @@ install(
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
+  osqp_vendor
+  osqp
+  moveit_core
+  srdfdom
   Eigen3
   Threads
   controller_interface
@@ -247,10 +272,22 @@ if(BUILD_TESTING)
     ament_target_dependencies(test_cartesian_trajectory_coordinator rclcpp sura_manipulation_actions)
   endif()
 
+  ament_add_gtest(test_robot_nominal test/test_robot_nominal.cpp TIMEOUT 300)
+  if(TARGET test_robot_nominal)
+    target_link_libraries(test_robot_nominal ${core_target})
+    ament_target_dependencies(test_robot_nominal rclcpp sura_manipulation_actions)
+  endif()
+
   ament_add_gtest(test_joint_nominal_task test/test_joint_nominal_task.cpp)
   if(TARGET test_joint_nominal_task)
     target_link_libraries(test_joint_nominal_task ${core_target})
     ament_target_dependencies(test_joint_nominal_task rclcpp)
+  endif()
+
+  ament_add_gtest(test_arm_manipulability_task test/test_arm_manipulability_task.cpp)
+  if(TARGET test_arm_manipulability_task)
+    target_link_libraries(test_arm_manipulability_task ${core_target})
+    ament_target_dependencies(test_arm_manipulability_task rclcpp visualization_msgs)
   endif()
 
   ament_add_gtest(test_joint_limits_task test/test_joint_limits_task.cpp)
@@ -265,10 +302,30 @@ if(BUILD_TESTING)
     ament_target_dependencies(test_stabilize_limits_task rclcpp)
   endif()
 
+  ament_add_gtest(test_frame_pose_limits_task test/test_frame_pose_limits_task.cpp)
+  if(TARGET test_frame_pose_limits_task)
+    target_link_libraries(test_frame_pose_limits_task ${core_target})
+    ament_target_dependencies(test_frame_pose_limits_task rclcpp)
+  endif()
+
+  foreach(norm_test IN ITEMS frame_position_norm_limits_task frame_orientation_norm_limits_task)
+    ament_add_gtest(test_${norm_test} test/test_${norm_test}.cpp)
+    if(TARGET test_${norm_test})
+      target_link_libraries(test_${norm_test} ${core_target})
+      ament_target_dependencies(test_${norm_test} rclcpp visualization_msgs)
+    endif()
+  endforeach()
+
   ament_add_gtest(test_end_effectors_relative_pose_task test/test_end_effectors_relative_pose_task.cpp)
   if(TARGET test_end_effectors_relative_pose_task)
     target_link_libraries(test_end_effectors_relative_pose_task ${core_target})
     ament_target_dependencies(test_end_effectors_relative_pose_task rclcpp)
+  endif()
+
+  ament_add_gtest(test_end_effectors_facing_task test/test_end_effectors_facing_task.cpp)
+  if(TARGET test_end_effectors_facing_task)
+    target_link_libraries(test_end_effectors_facing_task ${core_target})
+    ament_target_dependencies(test_end_effectors_facing_task rclcpp)
   endif()
 
   ament_add_gtest(test_end_effector_plan_relative_pose_task test/test_end_effector_plan_relative_pose_task.cpp)

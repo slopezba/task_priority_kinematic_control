@@ -1383,7 +1383,7 @@ Publishes either:
 - `PoseStamped` to `<TASK_TOPIC_PREFIX>/<task_id>/target`
 - `Float64MultiArray` to `<TASK_TOPIC_PREFIX>/<task_id>/joint_target`
 
-Important namespace note: `TASK_TOPIC_PREFIX` is hard-coded as `/cirtesub/controller/task_priority/tasks`, while the controller-side subscriptions are relative paths such as `task_priority/tasks/<id>/target`. This can be correct if the controller node namespace resolves to `/cirtesub/controller`, but it is a key thing to verify during integration.
+Important namespace note: `TASK_TOPIC_PREFIX` is hard-coded as `/cirtesub/alpha/controller/task_priority/tasks`, while the controller-side subscriptions are relative paths such as `task_priority/tasks/<id>/target`. This can be correct if the controller node namespace resolves to `/cirtesub/controller`, but it is a key thing to verify during integration.
 
 ## 21. End-to-End Control Tick
 

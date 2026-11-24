@@ -23,6 +23,8 @@ public:
 
   bool set_gain(const std::vector<double> & gain, std::string & message) override;
   bool roll_pitch_control() const {return roll_pitch_control_;}
+  const std::string & frame_id() const {return frame_id_;}
+  const PoseVelocity & activation() const {return activation_;}
   bool set_allow_roll_pitch(bool allow, std::string & message);
   bool set_enabled(bool enabled) override;
   void reset() override;

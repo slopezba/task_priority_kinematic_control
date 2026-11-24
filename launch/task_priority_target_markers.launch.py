@@ -27,7 +27,7 @@ def generate_launch_description():
             DeclareLaunchArgument("world_frame", default_value="world_ned"),
             DeclareLaunchArgument(
                 "task_topic_prefix",
-                default_value="/cirtesub/controller/task_priority/tasks",
+                default_value="/cirtesub/alpha/controller/task_priority/tasks",
             ),
             DeclareLaunchArgument(
                 "interactive_marker_namespace",

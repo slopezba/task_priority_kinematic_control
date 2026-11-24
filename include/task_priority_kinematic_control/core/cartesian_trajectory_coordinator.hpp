@@ -52,12 +52,15 @@ public:
   bool observe_command(const WholeBodyCommand &, const WholeBodyState &,
     const KinematicsBackend &);
   void cancel_to_measured(const WholeBodyState &, const std::string &, bool canceled = true);
-  bool release(const WholeBodyState &, const KinematicsBackend &, std::string &);
+  bool release(const WholeBodyState &, const KinematicsBackend &, std::string &,
+    bool keep_posture_targets = false);
   void shutdown(const WholeBodyState &, const KinematicsBackend &, const std::string &);
   bool allow_mutation(const std::string &, const WholeBodyState &,
     const KinematicsBackend &, std::string &);
   bool reserved(const std::string &) const;
-  bool owns_tasks() const {return !snapshots_.empty();}
+  bool reserve_posture(const std::string & tip_task);
+  bool posture_reserved() const {return posture_reserved_;}
+  bool owns_tasks() const {return posture_reserved_ || !snapshots_.empty();}
   const Status & status() const {return status_;}
 
 private:
@@ -77,6 +80,7 @@ private:
   std::shared_ptr<WholeBodyModel> model_;
   rclcpp::Clock::SharedPtr clock_;
   Settings settings_;
+  bool posture_reserved_ = false;
   std::vector<Snapshot> snapshots_;
   std::shared_ptr<BasePoseTrajectoryTask> base_task_;
   std::shared_ptr<JointTrajectoryTask> joint_task_;

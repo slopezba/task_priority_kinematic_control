@@ -265,7 +265,7 @@ Parámetros:
 Entrada runtime:
 
 ```text
-/cirtesub/controller/task_priority/tasks/<id>/target
+/cirtesub/alpha/controller/task_priority/tasks/<id>/target
 geometry_msgs/msg/PoseStamped
 ```
 
@@ -287,18 +287,24 @@ task_priority_kinematic_control/EndEffectorPositionTask
 
 Controla solo la posición XYZ de un frame.
 
+Por defecto captura la posición medida en el primer ciclo válido al habilitarse
+o reiniciarse y la mantiene como objetivo, igual que las tareas de pose. Esto se
+aplica tanto a `left_ee_position` como a `right_ee_position`.
+
 Parámetros:
 
 | Parámetro | Tipo | Descripción |
 | --- | --- | --- |
 | `frame_id` | string | Frame a controlar. |
 | `gain` | double[3] | Ganancias de posición XYZ. |
-| `default_goal` | double[3] | Objetivo usado si no llega un `PoseStamped`. |
+| `default_goal` | double[3] | Objetivo de respaldo con actualización automática desactivada y sin `PoseStamped`. |
+| `auto_update_target_pose` | bool | Captura automática de posición, activada por defecto. |
+| `feedforward_velocity_threshold` | double | Umbral de velocidad lineal para actualizar automáticamente el objetivo; por defecto `0.001`. |
 
 Entrada runtime:
 
 ```text
-/cirtesub/controller/task_priority/tasks/<id>/target
+/cirtesub/alpha/controller/task_priority/tasks/<id>/target
 geometry_msgs/msg/PoseStamped
 ```
 
@@ -324,7 +330,7 @@ Parámetros:
 Entrada runtime:
 
 ```text
-/cirtesub/controller/task_priority/tasks/<id>/target
+/cirtesub/alpha/controller/task_priority/tasks/<id>/target
 geometry_msgs/msg/PoseStamped
 ```
 
@@ -354,7 +360,7 @@ Parámetros:
 Entrada runtime:
 
 ```text
-/cirtesub/controller/task_priority/tasks/<id>/target
+/cirtesub/alpha/controller/task_priority/tasks/<id>/target
 geometry_msgs/msg/PoseStamped
 ```
 
@@ -364,6 +370,13 @@ Los ejes de la máscara están expresados en el frame mundo; las componentes
 angulares son las del error de orientación y de la velocidad angular, no tasas
 de Euler. Los ejes excluidos se eliminan del Jacobiano y su feedforward se ignora,
 también al evaluar el umbral de actualización automática del objetivo.
+La validación STPIK y la ejecución cartesiana Pose respetan esta máscara en las
+tolerancias iniciales, de trayectoria y de objetivo; STPIK también la aplica a
+la detección de estancamiento. El error se proyecta en los ejes activos del mundo
+antes de transformarlo al marco de tolerancias. El feedback conserva los seis
+errores medidos, incluidos los ejes libres. Una máscara sin ejes activos no
+aprueba la ejecución. La búsqueda de postura inicial conserva su restricción
+de pose completa al generar candidatas.
 La configuración dual de CIRTESUB usa `stabilize` con `[0, 0, 0, 1, 1, 0]`
 y prioridad 3, y `base_pose` con `[1, 1, 1, 0, 0, 1]` y prioridad 6.
 
@@ -499,7 +512,7 @@ Parámetros:
 Entrada runtime:
 
 ```text
-/cirtesub/controller/task_priority/tasks/<id>/joint_target
+/cirtesub/alpha/controller/task_priority/tasks/<id>/joint_target
 std_msgs/msg/Float64MultiArray
 ```
 
@@ -615,7 +628,7 @@ para todos los joints de `left_arm_joints` y `right_arm_joints`.
 Para tareas cuyo nombre de plugin contiene `PoseTask`:
 
 ```text
-/cirtesub/controller/task_priority/tasks/<task_id>/target
+/cirtesub/alpha/controller/task_priority/tasks/<task_id>/target
 geometry_msgs/msg/PoseStamped
 ```
 
@@ -631,7 +644,7 @@ y, por la lógica actual del código, cualquier plugin cuyo nombre contenga `Pos
 Para `JointNominalTask`:
 
 ```text
-/cirtesub/controller/task_priority/tasks/<task_id>/joint_target
+/cirtesub/alpha/controller/task_priority/tasks/<task_id>/joint_target
 std_msgs/msg/Float64MultiArray
 ```
 
@@ -640,7 +653,7 @@ std_msgs/msg/Float64MultiArray
 ### Comando de base en `task_priority_runtime`
 
 ```text
-Topic por defecto: /cirtesub/controller/task_priority/base_cmd
+Topic por defecto: /cirtesub/alpha/controller/task_priority/base_cmd
 Tipo: geometry_msgs/msg/TwistStamped
 ```
 
@@ -708,7 +721,7 @@ Tipo: task_priority_kinematic_control/msg/ControllerOutput
 Si el controlador está en el namespace `/cirtesub/controller`, ROS 2 lo resuelve como:
 
 ```text
-/cirtesub/controller/task_priority/output
+/cirtesub/alpha/controller/task_priority/output
 ```
 
 Publica en un solo mensaje:
@@ -765,7 +778,7 @@ task_priority_kinematic_control/msg/TaskState
 Si el controlador está en `/cirtesub/controller`, queda:
 
 ```text
-/cirtesub/controller/task_priority/tasks/<task_id>/state
+/cirtesub/alpha/controller/task_priority/tasks/<task_id>/state
 ```
 
 Publica:
@@ -991,7 +1004,7 @@ Diagnóstico del solver. En el código actual se rellenan backend, método, lamb
 Enviar objetivo de pose al efector izquierdo:
 
 ```bash
-ros2 topic pub --once /cirtesub/controller/task_priority/tasks/left_pose/target \
+ros2 topic pub --once /cirtesub/alpha/controller/task_priority/tasks/left_pose/target \
   geometry_msgs/msg/PoseStamped \
   "{header: {frame_id: world_ned}, pose: {position: {x: 0.5, y: 0.2, z: -0.1}, orientation: {w: 1.0}}}"
 ```
@@ -999,7 +1012,7 @@ ros2 topic pub --once /cirtesub/controller/task_priority/tasks/left_pose/target 
 Cambiar postura nominal del brazo izquierdo:
 
 ```bash
-ros2 topic pub --once /cirtesub/controller/task_priority/tasks/left_arm_nominal/joint_target \
+ros2 topic pub --once /cirtesub/alpha/controller/task_priority/tasks/left_arm_nominal/joint_target \
   std_msgs/msg/Float64MultiArray \
   "{data: [0.0, 1.2, 1.2, 1.0, 0.0]}"
 ```
@@ -1068,12 +1081,113 @@ El paquete depende de:
 | `task_priority_kinematic_control_core_plugins.xml` | Registro de backends y tasks. |
 | `task_priority_kinematic_control_plugins.xml` | Registro del controlador `ros2_control`. |
 
+## Coste de preparación de postura
+
+El optimizador minimiza la suma ponderada de reconfiguración, inclinación media
+cuadrática, límites articulares, límites de estabilización, autocolisión y obstáculos.
+Los tres costes de tareas de seguridad usan sus límites reales y sus estados de
+activación después de cada actualización, incluida la histéresis. No se modifican
+las condiciones de activación ni los límites del controlador.
+
+Para una distancia `d` al límite de seguridad, la penalización preventiva es
+`clamp((dp - d) / (dp - da), 0, 1)^2`. `da` es la distancia de activación y `dp`
+la distancia de liberación: `alpha`/`delta` para articulaciones y estabilización;
+`activation_distance - safe_distance`/`release_distance - safe_distance` para
+autocolisión. Fuera de `dp` el coste es cero.
+
+Si la tarea está activa, el coste salta a
+`K * (1 + clamp((da - d) / max(da, 1e-12), 0, 1)^2)`, con
+`K = posture.activation_penalty` (100 por defecto, debe ser mayor que 1).
+Se toma el máximo entre todos los elementos y todos los instantes del recorrido
+cartesiano desde la postura candidata. La recolocación también se valida, pero no
+se puntúa: así la proximidad inicial común no impide valorar una postura mejor.
+Una violación de seguridad sigue rechazando la candidata,
+contando `stpik.numerical_tolerance`, independientemente del peso del coste.
+
+Los pesos son `posture.movement_weight` (0.05), `posture.tilt_weight` (1),
+`posture.joint_weight` (1), `posture.stabilize_weight` (1),
+`posture.self_collision_weight` (1) y `posture.clearance_weight` (1).
+Este último mide solo obstáculos externos de MoveIt, con la misma función por
+tramos y distancias `posture.obstacle_activation_distance` (0.02 m) y
+`posture.collision_buffer` (0.06 m). La autocolisión geométrica de MoveIt continúa
+siendo motivo de rechazo; su distancia no duplica el coste de autocolisión.
+
+El coste articular anterior basado en `posture.joint_buffer` queda sustituido;
+ese parámetro solo conserva su uso en la generación heurística de candidatos.
+Los parámetros se leen en cada nueva búsqueda y se guardan con la propuesta.
+
+Los rechazos por colisión incluyen su origen en el feedback de fallo y el resultado:
+`source=MoveIt` muestra hasta cinco contactos con nombres de enlaces u objetos,
+tipo `self_collision` o `robot_world` y profundidad de penetración en metros.
+`source=task` identifica la tarea de evitación, la pareja de cápsulas o plano,
+la separación mínima, la distancia segura y posibles fallos de geometría.
+El origen identifica la comprobación que rechazó la candidata; no implica que
+la otra comprobación se haya ejecutado o que también hubiera rechazado el estado.
+
+## Tarea `robot_nominal` y trayectoria nominal
+
+`task_priority_kinematic_control/RobotNominalTask` sigue una referencia de cuerpo completo:
+pose de la base en el frame mundo (coordenadas ZYX) y todas las articulaciones del modelo.
+Filas: `[x, y, z, roll, pitch, yaw, articulaciones izquierdas, articulaciones derechas]`,
+filtradas por `activation` (por defecto roll y pitch quedan para `stabilize`).
+
+- La referencia llega en `task_priority/tasks/<id>/reference`
+  (`sura_manipulation_actions/msg/RobotNominalReference`) con feedforward. Caduca tras
+  `joint_command_timeout`; sin referencia viva la tarea no aporta filas.
+- `sync_tasks` (`base_pose`, `left_arm_nominal`, `right_arm_nominal`) se reapuntan con cada
+  referencia. Así no compiten con la nominal ni devuelven el robot atrás al terminar.
+- Parámetros: `gain` (6 + articulaciones), `activation`, `joint_command_timeout` y `sync_tasks`.
+- STPIK la copia y la incluye en la clave del snapshot. Una referencia viva en la captura
+  invalida la comprobación, igual que un feedforward articular.
+- `CheckCartesianTrajectory` acepta `nominal_joints`/`nominal_base` y la simula emitida en
+  cada paso. Exige una `RobotNominalTask` habilitada (`NOMINAL_TASK_UNAVAILABLE`).
+
+El cálculo de la nominal está en `src/core/nominal_trajectory.cpp`. Se lanza desde
+`prepare_cartesian_posture` con `full_trajectory: true`, y los parámetros son
+`posture.nominal.*`: `budget`, `knot_dt`, `max_knots`, `iterations`, `trust_position`,
+`trust_angle`, `trust_joint`, `smooth_weight`, `soft_task_weight`, `equality_tolerance`, `velocity_fraction`,
+`global_layers`, `global_samples`, `global_seed` y `global_fallback`. El método está descrito
+en [la guía del planificador](../sura_manipulation_actions/docs/single_arm_cartesian_planner.md).
+
+
+`posture.nominal.equality_tolerance` vale `0.02` y se aplica por fila a las tareas
+de igualdad de la jerarquía: ±2 cm por eje de posición y ±0.02 rad para errores
+angulares (aproximadamente 1.15°). Las igualdades de prioridad alta son factibles
+dentro del margen; las de prioridad inferior no penalizan errores dentro de él.
+Las tareas norm con `always_active: true` también usan ese margen. Las tareas
+set-based conservan sus límites configurados; las tolerancias de seguimiento
+del camino y del objetivo siguen viniendo de la acción. El margen se lee al
+preparar cada nueva planificación; no cambia las ganancias del controlador.
+
+
+La optimización de trayectoria usa una jerarquía preventiva, sin multiplicar por un
+peso enorme los costes de seguridad. Primero recupera la factibilidad si la semilla
+incumple restricciones. En cada paso SQP factible resuelve dos QP: minimiza la suma
+normalizada de déficits respecto al umbral de liberación y después optimiza suavidad,
+inclinación, márgenes y movimiento inicial, acotando cada déficit al resultado del
+primer QP (tolerancia `1e-5`). La aceptación no lineal prioriza el coste preventivo
+(tolerancia `1e-7`); la búsqueda por capas también lo compara antes del coste secundario.
+
+Se consideran las tareas habilitadas incluidas por la jerarquía del planificador:
+`JointLimitsTask`, `StabilizeLimitsTask`, `FramePoseLimitsTask`,
+`FramePositionNormLimitsTask`, `FrameOrientationNormLimitsTask` y todas las parejas
+cápsula/cápsula y cápsula/plano de `SelfCollisionAvoidanceTask`, aunque todavía estén
+inactivas. Las normas `always_active` no reciben este objetivo. Un déficit cero
+significa haber alcanzado el margen de liberación; uno corresponde a activación y
+valores mayores a haberla sobrepasado. Los umbrales proceden de cada tarea, por lo
+que respetan también el margen necesario para salir de la histéresis. No cambia las
+restricciones obligatorias ni la validación final STPIK. `NominalPlan.preventive_cost`
+expone este coste por separado de `cost`. El primer nudo fijo no se penaliza.
+
+Esta jerarquía es local: no garantiza evitar toda activación si el recorrido no lo
+permite ni explorar todas las posturas; la búsqueda global sigue siendo un fallback.
+
 ## Notas de uso
 
 - Los tamaños de `dof_weights` y `velocity_limits` deben coincidir con `total_dofs` para cubrir todos los DOFs.
 - Los límites articulares se ordenan como `left_arm_joints` seguido de `right_arm_joints`.
 - `priority` menor significa tarea más importante.
-- Para que una task de pose se mueva necesita recibir un objetivo, salvo tasks con objetivo por defecto como `EndEffectorPositionTask`.
+- Las tareas de pose y posición capturan el objetivo medido al habilitarse con actualización automática; para moverlas, envía un objetivo o feedforward.
 - El backend Pinocchio está registrado, pero no debe usarse en ejecución hasta que se implemente.
 - Si el nodo no recibe navegación o joints, no publica comandos útiles y reporta `waiting_for_state`.
 
@@ -1083,10 +1197,10 @@ El paquete depende de:
 
 ## Feedforward de las tareas de pose
 
-`FramePoseTask` y `EndEffectorPoseTask` reciben `geometry_msgs/msg/TwistStamped` en
+`FramePoseTask`, `EndEffectorPoseTask` y `EndEffectorPositionTask` reciben `geometry_msgs/msg/TwistStamped` en
 `task_priority/tasks/<id>/feedforward`, junto al tópico de objetivo existente
 `task_priority/tasks/<id>/target`. En el bringup de CIRTESUB, el prefijo público es
-`/cirtesub/controller/task_priority/tasks`.
+`/cirtesub/alpha/controller/task_priority/tasks`.
 
 La velocidad deseada es `vff + K * error`, con orden XYZ lineal y XYZ angular.
 `header.frame_id` selecciona los ejes de la velocidad; vacío utiliza el frame de
@@ -1114,6 +1228,9 @@ atrasados. `TaskState.feedforward` muestra la velocidad aplicada en el mundo.
 
 Con `auto_update_target_pose: false`, se respeta el objetivo recibido por `/target`
 y solamente se suma la velocidad. Las demás tareas no reciben estos tópicos.
+
+`EndEffectorPositionTask` aplica únicamente el feedforward lineal y compara su
+norma con el umbral; las componentes angulares no mueven ni recapturan el objetivo.
 
 ### Cambiar la actualización automática durante el control
 

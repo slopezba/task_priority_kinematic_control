@@ -7,42 +7,9 @@
 namespace task_priority_kinematic_control
 {
 
-namespace
-{
-
-Eigen::Vector3d quaternion_error(
-  const Eigen::Quaterniond & target,
-  const Eigen::Quaterniond & current)
-{
-  const Eigen::Quaterniond q_err = target * current.conjugate();
-  Eigen::AngleAxisd aa(q_err);
-  return aa.axis() * aa.angle();
-}
-
-Eigen::Isometry3d base_pose_from_state(const WholeBodyState & state)
-{
-  Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
-  pose.translation() = state.base_position;
-  const Eigen::AngleAxisd roll(state.base_rpy.x(), Eigen::Vector3d::UnitX());
-  const Eigen::AngleAxisd pitch(state.base_rpy.y(), Eigen::Vector3d::UnitY());
-  const Eigen::AngleAxisd yaw(state.base_rpy.z(), Eigen::Vector3d::UnitZ());
-  pose.linear() = (yaw * pitch * roll).toRotationMatrix();
-  return pose;
-}
-
-Eigen::MatrixXd base_jacobian_for_model(const WholeBodyModel & model)
-{
-  Eigen::MatrixXd jacobian = Eigen::MatrixXd::Zero(6, model.total_dofs());
-  for (size_t i = 0; i < model.active_base_dofs().size(); ++i) {
-    const int dof = model.active_base_dofs()[i];
-    if (dof >= 0 && dof < 6) {
-      jacobian.col(static_cast<Eigen::Index>(i))(dof) = 1.0;
-    }
-  }
-  return jacobian;
-}
-
-}  // namespace
+using pose_math::quaternion_error;
+using pose_math::base_pose_from_state;
+using pose_math::base_jacobian_for_model;
 
 void FramePoseTask::configure(
   const std::string & id,

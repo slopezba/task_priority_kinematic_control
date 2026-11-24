@@ -1,4 +1,5 @@
 #pragma once
+#include "task_priority_kinematic_control/core/posture_action.hpp"
 
 #include "task_priority_kinematic_control/core/stpik_check_io.hpp"
 
@@ -13,6 +14,7 @@
 #include "task_priority_kinematic_control/core/whole_body_model.hpp"
 #include "task_priority_kinematic_control/kinematics/kinematics_backend.hpp"
 #include "task_priority_kinematic_control/msg/controller_output.hpp"
+#include "task_priority_kinematic_control/msg/facing_target.hpp"
 #include "task_priority_kinematic_control/msg/hierarchy_state.hpp"
 #include "task_priority_kinematic_control/msg/task_state.hpp"
 #include "task_priority_kinematic_control/srv/list_tasks.hpp"
@@ -171,6 +173,7 @@ private:
   rclcpp::Subscription<NavigatorMsg>::SharedPtr navigator_sub_;
   std::map<std::string, rclcpp::Subscription<PoseStamped>::SharedPtr> task_target_subs_;
   std::map<std::string, rclcpp::Subscription<Float64MultiArray>::SharedPtr> task_joint_target_subs_;
+  std::map<std::string, rclcpp::Subscription<msg::FacingTarget>::SharedPtr> task_facing_target_subs_;
   std::map<std::string, rclcpp::Subscription<JointTrajectory>::SharedPtr> task_joint_trajectory_subs_;
   std::map<std::string, rclcpp_action::Server<FollowJointTrajectory>::SharedPtr>
     task_joint_trajectory_action_servers_;
@@ -209,6 +212,7 @@ private:
   rclcpp::TimerBase::SharedPtr trajectory_result_timer_;
   // Destroy the checker before any captured host state.
   StpikCheckIO stpik_check_io_;
+  std::unique_ptr<PostureAction> posture_action_;
 
 };
 

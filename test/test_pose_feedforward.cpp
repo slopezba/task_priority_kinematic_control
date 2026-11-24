@@ -1,7 +1,9 @@
 #include "task_priority_kinematic_control/tasks/frame_pose_task.hpp"
 #include "task_priority_kinematic_control/tasks/end_effector_pose_task.hpp"
+#include "task_priority_kinematic_control/tasks/end_effector_position_task.hpp"
 #include "task_priority_kinematic_control/core/pose_task_io.hpp"
 #include "task_priority_kinematic_control/core/manual_task_io.hpp"
+#include "task_priority_kinematic_control/tasks/robot_nominal_task.hpp"
 #include <gtest/gtest.h>
 #include <limits>
 #include <chrono>
@@ -26,6 +28,97 @@ public:
   std::string name() const override {return "pose_test";}
   std::vector<CollisionCapsule> capsules;
 };
+
+TEST(EndEffectorPositionTest, BothArmsCaptureHoldAndRecaptureTheirMeasuredPosition)
+{
+  auto model = std::make_shared<WholeBodyModel>();
+  model->configure("world", "base", "left", "right", {}, {}, {0,1,2,3,4,5});
+  for (const std::string side : {"left", "right"}) {
+    SCOPED_TRACE(side);
+    EndEffectorPositionTask task;
+    task.configure(side + "_ee_position", "plugin", {
+      {"frame_id", rclcpp::Parameter("frame_id", side)}}, TaskContext{model});
+    PoseBackend backend;
+    backend.frame.jacobian = Eigen::MatrixXd::Identity(6, model->total_dofs());
+    backend.frame.pose.translation() << 0.9, -0.7, 1.5;
+    WholeBodyState state;
+    const auto initial = task.update(state, backend);
+    ASSERT_TRUE(initial.has_updated_target);
+    EXPECT_TRUE(initial.error.isZero());
+    EXPECT_TRUE(initial.desired_velocity.isZero());
+    ASSERT_EQ(task.current_target().size(), 7u);
+    EXPECT_DOUBLE_EQ(task.current_target()[0], 0.9);
+    backend.frame.pose.translation().x() += 0.1;
+    auto moved = task.update(state, backend);
+    EXPECT_FALSE(moved.has_updated_target);
+    EXPECT_NEAR(moved.error(0), -0.1, 1e-12);
+    EXPECT_EQ(moved.jacobian.rows(), 3);
+    EXPECT_TRUE(task.set_enabled(false));
+    EXPECT_FALSE(task.update(state, backend).active);
+    backend.frame.pose.translation().y() += 0.2;
+    EXPECT_TRUE(task.set_enabled(true));
+    const auto reactivated = task.update(state, backend);
+    EXPECT_TRUE(reactivated.has_updated_target);
+    EXPECT_TRUE(reactivated.error.isZero());
+    backend.frame.pose.translation().z() += 0.3;
+    task.reset();
+    EXPECT_TRUE(task.update(state, backend).error.isZero());
+  }
+}
+
+TEST(EndEffectorPositionTest, InvalidPoseDoesNotInitializeTargetAndOnlyLinearFeedforwardRecaptures)
+{
+  auto model = std::make_shared<WholeBodyModel>();
+  model->configure("world", "base", "left", "right", {}, {}, {0,1,2,3,4,5});
+  EndEffectorPositionTask task;
+  task.configure("right_ee_position", "plugin", {}, TaskContext{model});
+  PoseBackend backend;
+  backend.frame.jacobian = Eigen::MatrixXd::Identity(6, model->total_dofs());
+  WholeBodyState state;
+  backend.frame.pose.translation().x() = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(task.update(state, backend).active);
+  EXPECT_TRUE(task.current_target().empty());
+  backend.frame.pose.translation().x() = 1.0;
+  EXPECT_TRUE(task.update(state, backend).has_updated_target);
+  PoseVelocity velocity = PoseVelocity::Zero();
+  velocity.tail<3>().setOnes();
+  ASSERT_TRUE(task.set_feedforward(velocity, task.feedforward_epoch()));
+  backend.frame.pose.translation().x() = 1.1;
+  const auto rotation_only = task.update(state, backend);
+  EXPECT_FALSE(rotation_only.has_updated_target);
+  EXPECT_TRUE(rotation_only.feedforward.isZero());
+  EXPECT_NEAR(rotation_only.error(0), -0.1, 1e-12);
+  velocity.x() = 0.2;
+  ASSERT_TRUE(task.set_feedforward(velocity, task.feedforward_epoch()));
+  const auto translating = task.update(state, backend);
+  EXPECT_TRUE(translating.has_updated_target);
+  EXPECT_TRUE(translating.error.isZero());
+  EXPECT_DOUBLE_EQ(translating.desired_velocity(0), 0.2);
+  EXPECT_EQ(translating.desired_velocity.size(), 3);
+}
+
+TEST(EndEffectorPositionTest, AutomaticCaptureCanBeDisabledForExplicitOrDefaultGoals)
+{
+  auto model = std::make_shared<WholeBodyModel>();
+  model->configure("world", "base", "left", "right", {}, {}, {0,1,2,3,4,5});
+  EndEffectorPositionTask task;
+  task.configure("left_ee_position", "plugin", {
+    {"auto_update_target_pose", rclcpp::Parameter("auto_update_target_pose", false)},
+    {"default_goal", rclcpp::Parameter("default_goal", std::vector<double>{2, 3, 4})}},
+    TaskContext{model});
+  PoseBackend backend;
+  backend.frame.jacobian = Eigen::MatrixXd::Identity(6, model->total_dofs());
+  WholeBodyState state;
+  const auto initial = task.update(state, backend);
+  EXPECT_FALSE(initial.has_updated_target);
+  EXPECT_TRUE(initial.error.isApprox(Eigen::Vector3d(2, 3, 4)));
+  geometry_msgs::msg::PoseStamped goal;
+  goal.header.frame_id = "world";
+  goal.pose.position.x = 5;
+  goal.pose.orientation.w = 1;
+  ASSERT_TRUE(task.set_pose_goal(goal));
+  EXPECT_TRUE(task.update(state, backend).error.isApprox(Eigen::Vector3d(5, 0, 0)));
+}
 
 TEST(FramePoseAxesTest, ComplementaryTasksLeaveOnlyTheirSelectedJacobianRows)
 {
@@ -431,6 +524,52 @@ TEST_F(PoseTaskIOTest, ManualInterfacesExposeTiltServicesAndAtomicNominalCommand
   EXPECT_NEAR(nominal->update(state, backend).desired_velocity(0), 0.1, 1e-12);
   manual.set_active(false);
   EXPECT_TRUE(nominal->update(state, backend).feedforward.isZero());
+}
+
+TEST_F(PoseTaskIOTest, RobotNominalReferenceTopicRetargetsTaskAndHolds)
+{
+  model->configure("world", "base", "left", "right", {"a"}, {"b"}, {0,1,2,3,4,5});
+  auto hold = std::make_shared<JointNominalTask>();
+  hold->configure("left_arm_nominal", "plugin", {
+    {"joint_names", rclcpp::Parameter("joint_names", std::vector<std::string>{"a"})}}, TaskContext{model});
+  auto robot = std::make_shared<RobotNominalTask>();
+  robot->configure("robot_nominal", "plugin", {
+    {"sync_tasks", rclcpp::Parameter("sync_tasks", std::vector<std::string>{"left_arm_nominal"})}},
+    TaskContext{model});
+  std::mutex mutex;
+  ManualTaskIO manual;
+  manual.configure(node.get(), {hold, robot}, mutex);
+  manual.set_active(true);
+  auto publisher = node->create_publisher<sura_manipulation_actions::msg::RobotNominalReference>(
+    "task_priority/tasks/robot_nominal/reference", 1);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (publisher->get_subscription_count() == 0 && std::chrono::steady_clock::now() < deadline) {executor.spin_some();}
+  ASSERT_GT(publisher->get_subscription_count(), 0U);
+  sura_manipulation_actions::msg::RobotNominalReference reference;
+  reference.header.frame_id = "world";
+  reference.base_pose.position.x = 0.4;
+  reference.base_pose.orientation.w = 1.0;
+  reference.base_twist.linear.x = 0.05;
+  reference.joint_names = {"b", "a"};
+  reference.positions = {0.3, 0.6};
+  reference.velocities = {0.0, 0.1};
+  publisher->publish(reference);
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (hold->current_target() != std::vector<double>{0.6} && std::chrono::steady_clock::now() < until) {
+    executor.spin_some();
+  }
+  EXPECT_EQ(hold->current_target(), std::vector<double>{0.6});
+  state.joint_positions = Eigen::Vector2d(0.6, 0.3);
+  state.navigation_valid = state.joints_valid = true;
+  const auto output = robot->update(state, backend);
+  ASSERT_TRUE(output.active);
+  EXPECT_NEAR(output.error(0), 0.4, 1e-12);
+  EXPECT_NEAR(output.feedforward(0), 0.05, 1e-12);
+  // Rows: x, y, z, yaw (roll/pitch inactive by default), then joints a, b.
+  ASSERT_EQ(output.feedforward.size(), 6);
+  EXPECT_NEAR(output.feedforward(4), 0.1, 1e-12);
+  manual.set_active(false);
+  EXPECT_FALSE(robot->update(state, backend).active);
 }
 
 TEST_F(PoseTaskIOTest, HonorsTimestampAndZeroUsesLatestTransform)

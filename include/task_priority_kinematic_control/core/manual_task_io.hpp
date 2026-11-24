@@ -2,6 +2,7 @@
 
 #include "task_priority_kinematic_control/tasks/frame_pose_task.hpp"
 #include "task_priority_kinematic_control/tasks/joint_nominal_task.hpp"
+#include "task_priority_kinematic_control/tasks/robot_nominal_task.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <mutex>
@@ -21,7 +22,9 @@ public:
   {
     services_.clear();
     subscriptions_.clear();
+    reference_subscriptions_.clear();
     nominals_.clear();
+    robot_nominals_.clear();
     active_ = false;
     for (const auto & task : tasks) {
       const std::string prefix = "task_priority/tasks/" + task->id();
@@ -40,6 +43,33 @@ public:
               if (!active_) {std::fill(command.velocity.begin(), command.velocity.end(), 0.0);}
               if (!task->set_joint_command(command, message)) {
                 RCLCPP_WARN(logger, "Rejected joint command for '%s': %s", task->id().c_str(), message.c_str());
+              }
+            }
+          }));
+      }
+      if (auto robot = std::dynamic_pointer_cast<RobotNominalTask>(task)) {
+        robot_nominals_.push_back(robot);
+        reference_subscriptions_.push_back(
+          node->template create_subscription<sura_manipulation_actions::msg::RobotNominalReference>(
+          prefix + "/reference", rclcpp::QoS(1),
+          [this, all = std::vector<std::weak_ptr<TaskBase>>(tasks.begin(), tasks.end()),
+          weak = std::weak_ptr<RobotNominalTask>(robot), &task_mutex, mutation_guard,
+          logger = node->get_logger(), clock = std::make_shared<rclcpp::Clock>(RCL_STEADY_TIME)](
+            const sura_manipulation_actions::msg::RobotNominalReference::SharedPtr msg) {
+            if (!msg) {return;}
+            std::scoped_lock lock(task_mutex);
+            if (auto task = weak.lock()) {
+              std::string message;
+              if (mutation_guard && !mutation_guard(task->id(), message)) {return;}
+              for (const auto & id : task->sync_tasks()) {
+                if (mutation_guard && !mutation_guard(id, message)) {return;}
+              }
+              std::vector<std::shared_ptr<TaskBase>> tasks;
+              for (const auto & entry : all) {if (auto locked = entry.lock()) {tasks.push_back(locked);}}
+              // Synchronized holds keep the streamed pose when the stream stops.
+              if (!apply_robot_nominal_reference(tasks, *task, *msg, message, !active_)) {
+                RCLCPP_WARN_THROTTLE(logger, *clock, 2000,
+                  "Rejected robot nominal reference for '%s': %s", task->id().c_str(), message.c_str());
               }
             }
           }));
@@ -69,11 +99,17 @@ public:
     for (const auto & weak : nominals_) {
       if (auto task = weak.lock()) {task->clear_velocity();}
     }
+    for (const auto & weak : robot_nominals_) {
+      if (auto task = weak.lock()) {task->clear_reference();}
+    }
   }
 
 private:
   bool active_ = false;
   std::vector<std::weak_ptr<JointNominalTask>> nominals_;
+  std::vector<std::weak_ptr<RobotNominalTask>> robot_nominals_;
+  std::vector<rclcpp::Subscription<sura_manipulation_actions::msg::RobotNominalReference>::SharedPtr>
+  reference_subscriptions_;
   std::vector<rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr> services_;
   std::vector<rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr> subscriptions_;
 };

@@ -204,7 +204,7 @@ public:
     world_frame_ = declare_parameter<std::string>("world_frame", "world_ned");
     task_topic_prefix_ = strip_trailing_slash(
       declare_parameter<std::string>(
-        "task_topic_prefix", "/cirtesub/controller/task_priority/tasks"));
+        "task_topic_prefix", "/cirtesub/alpha/controller/task_priority/tasks"));
     interactive_marker_namespace_ = strip_trailing_slash(
       declare_parameter<std::string>(
         "interactive_marker_namespace", ""));

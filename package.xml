@@ -31,6 +31,9 @@
   <depend>urdf</depend>
   <depend>visualization_msgs</depend>
   <depend>eigen3</depend>
+  <depend>osqp_vendor</depend>
+  <depend>moveit_core</depend>
+  <depend>srdfdom</depend>
   <depend>rosidl_default_generators</depend>
   <depend>rosidl_default_runtime</depend>
   <member_of_group>rosidl_interface_packages</member_of_group>

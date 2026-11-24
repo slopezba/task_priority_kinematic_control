@@ -20,6 +20,8 @@ task_priority_runtime:
       - cirtesub/alpha_right/axis_e
     active_base_dofs: [0, 1, 2, 3, 4, 5]
     # Offline STPIK gate for Cartesian Pose execution; runtime task gains stay unchanged.
+    # Nominal equality margin per row: 2 cm for positions, 0.02 rad for angles.
+    posture.nominal.equality_tolerance: 0.02
     stpik.dt: 0.01
     # Cartesian path/goal tolerances come exclusively from the action goal.
     stpik.stall_window: 1.0
@@ -40,7 +42,7 @@ task_priority_runtime:
     rate_hz: 20.0
     navigator_topic: /cirtesub/navigator/navigation
     joint_states_topic: /cirtesub/alpha/joint_states
-    base_command_topic: /cirtesub/controller/task_priority/base_cmd
+    base_command_topic: /cirtesub/alpha/controller/task_priority/base_cmd
     left_arm_command_topic: /cirtesub/alpha/controller/alpha_left_forward_velocity_controller/commands
     right_arm_command_topic: /cirtesub/alpha/controller/alpha_right_forward_velocity_controller/commands
 
@@ -48,6 +50,7 @@ task_priority_runtime:
       - self_collision_avoidance
       - left_pose
       - right_pose
+      - EndEffectors_Facing
       - ee_plan_relative_pose
       - joint_limits
       - base_pose_trajectory
@@ -56,6 +59,8 @@ task_priority_runtime:
       - left_arm_nominal
       - right_arm_nominal
       - base_yaw
+      - frame_pose_limits
+      - robot_nominal
 
     tasks.self_collision_avoidance.plugin: task_priority_kinematic_control/SelfCollisionAvoidanceTask
     tasks.self_collision_avoidance.enabled: true
@@ -111,7 +116,7 @@ task_priority_runtime:
     tasks.left_pose.enabled: true
     tasks.left_pose.auto_update_target_pose: true
     tasks.left_pose.feedforward_velocity_threshold: 0.001
-    tasks.left_pose.priority: 1.0
+    tasks.left_pose.priority: 2.0
     tasks.left_pose.group: left
     tasks.left_pose.frame_id: cirtesub/alpha_left/standard_jaws_tool
     tasks.left_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
@@ -120,10 +125,25 @@ task_priority_runtime:
     tasks.right_pose.enabled: true
     tasks.right_pose.auto_update_target_pose: true
     tasks.right_pose.feedforward_velocity_threshold: 0.001
-    tasks.right_pose.priority: 2.0
+    tasks.right_pose.priority: 1.0
     tasks.right_pose.group: right
     tasks.right_pose.frame_id: cirtesub/alpha_right/standard_jaws_tool
     tasks.right_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
+
+    # Both EE face each other. Target topic: task_priority/tasks/EndEffectors_Facing/facing_target
+    # (task_priority_kinematic_control/msg/FacingTarget). Rows: [left pointing(2), right pointing(2), roll, distance].
+    # roll_angle / distance are optional defaults; if omitted, the current values are kept.
+    tasks.EndEffectors_Facing.plugin: task_priority_kinematic_control/EndEffectorsFacingTask
+    tasks.EndEffectors_Facing.enabled: false
+    tasks.EndEffectors_Facing.priority: 2.0
+    tasks.EndEffectors_Facing.group: bimanual
+    tasks.EndEffectors_Facing.left_frame: cirtesub/alpha_left/ee_base_link
+    tasks.EndEffectors_Facing.right_frame: cirtesub/alpha_right/ee_base_link
+    tasks.EndEffectors_Facing.left_pointing_axis: [0.0, 0.0, 1.0]
+    tasks.EndEffectors_Facing.right_pointing_axis: [0.0, 0.0, 1.0]
+    tasks.EndEffectors_Facing.min_distance: 0.02
+    tasks.EndEffectors_Facing.gain: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+    tasks.EndEffectors_Facing.activation: [1, 1, 1, 1, 1, 1]
 
     tasks.ee_plan_relative_pose.plugin: task_priority_kinematic_control/EndEffectorPlanRelativePoseTask
     tasks.ee_plan_relative_pose.enabled: false
@@ -262,3 +282,34 @@ task_priority_runtime:
     tasks.right_joint_trajectory.gain: [1.0, 1.0, 1.0, 1.0]
     tasks.right_joint_trajectory.interpolation_method: quintic
     tasks.right_joint_trajectory.hold_last_point: true
+
+    # Set-based pose task: keeps the frame inside a +/- threshold box around a
+    # target pose (axes of the target frame). An axis only takes DoFs when it
+    # reaches threshold - activation_margin and is released (hysteresis) at
+    # threshold - release_margin. Target: task_priority/tasks/frame_pose_limits/target
+    # (PoseStamped in the world frame); without a target it holds the current pose.
+    tasks.frame_pose_limits.plugin: task_priority_kinematic_control/FramePoseLimitsTask
+    tasks.frame_pose_limits.enabled: false
+    tasks.frame_pose_limits.priority: 11.0  # lowest priority in this file
+    tasks.frame_pose_limits.group: right
+    tasks.frame_pose_limits.frame_id: cirtesub/alpha_right/standard_jaws_tool
+    # Controlled axes in target-frame order [x, y, z, rx, ry, rz].
+    tasks.frame_pose_limits.axes: [true, true, true, false, false, true]
+    tasks.frame_pose_limits.threshold: [0.05, 0.05, 0.05, 0.2, 0.2, 0.2]          # m / rad
+    tasks.frame_pose_limits.activation_margin: [0.01, 0.01, 0.01, 0.03, 0.03, 0.03]  # alpha
+    tasks.frame_pose_limits.release_margin: [0.02, 0.02, 0.02, 0.06, 0.06, 0.06]     # delta
+    tasks.frame_pose_limits.eps: 0.0001
+    tasks.frame_pose_limits.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
+    tasks.frame_pose_limits.max_repulsive_velocity: 0.1
+
+    # Whole-body nominal streamed by the Pose planner ("Optimize whole trajectory").
+    # Rows: [x, y, z, roll, pitch, yaw, left joints, right joints]; no rows without a live
+    # reference. sync_tasks are retargeted with each reference.
+    tasks.robot_nominal.plugin: task_priority_kinematic_control/RobotNominalTask
+    tasks.robot_nominal.enabled: true
+    tasks.robot_nominal.priority: 30.0
+    tasks.robot_nominal.group: whole_body
+    tasks.robot_nominal.gain: [0.5, 0.5, 0.5, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+    tasks.robot_nominal.activation: [1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    tasks.robot_nominal.joint_command_timeout: 0.3
+    tasks.robot_nominal.sync_tasks: [left_arm_nominal, right_arm_nominal]
