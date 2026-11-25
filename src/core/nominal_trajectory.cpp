@@ -1,5 +1,6 @@
 #include "task_priority_kinematic_control/core/nominal_trajectory.hpp"
 #include "task_priority_kinematic_control/core/posture_scene.hpp"
+#include "task_priority_kinematic_control/tasks/pose_task_common.hpp"
 #include "task_priority_kinematic_control/tasks/robot_nominal_task.hpp"
 #include "sura_manipulation_actions/cartesian_pose_path.hpp"
 #include "sura_manipulation_actions/whole_body_nominal.hpp"
@@ -436,7 +437,7 @@ private:
       const double w = dt_ / total_;
       const auto at = "t=" + std::to_string(times_[k]) + " s";
       // Tool pose on the timed path.
-      const auto frame = probe.backend->compute_frame_state(s, goal_.tip_frame);
+      const auto frame = pose_math::compute_tip_state(*probe.backend, s, goal_.tip_frame, probe.tasks[static_cast<size_t>(selected_)].get());
       knot.tip_j = to_coordinates(frame.jacobian, x[k]);
       knot.tip_e = tip_error(path_.sample(times_[k]), frame.pose);
       for (int i = 0; i < 6; ++i) {
@@ -784,7 +785,7 @@ private:
     for (int iteration = 0; iteration < 40; ++iteration) {
       const auto s = state(x);
       probe.backend->update(s);
-      const auto frame = probe.backend->compute_frame_state(s, goal_.tip_frame);
+      const auto frame = pose_math::compute_tip_state(*probe.backend, s, goal_.tip_frame, probe.tasks[static_cast<size_t>(selected_)].get());
       std::vector<Eigen::RowVectorXd> rows;
       std::vector<double> errors;
       const Vector6 tip = tip_error(desired, frame.pose);

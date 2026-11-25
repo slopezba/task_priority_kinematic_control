@@ -242,6 +242,12 @@ if(BUILD_TESTING)
     ament_target_dependencies(test_pose_feedforward rclcpp tf2_ros)
   endif()
 
+  ament_add_gtest(test_pose_offset test/test_pose_offset.cpp)
+  if(TARGET test_pose_offset)
+    target_link_libraries(test_pose_offset ${core_target})
+    ament_target_dependencies(test_pose_offset rclcpp tf2_ros std_msgs)
+  endif()
+
   ament_add_gtest(test_controller_interfaces test/test_controller_interfaces.cpp)
   if(TARGET test_controller_interfaces)
     target_link_libraries(test_controller_interfaces ${core_target})

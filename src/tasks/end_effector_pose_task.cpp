@@ -28,6 +28,7 @@ void EndEffectorPoseTask::configure(
   configure_common(id, plugin_name, parameters, context);
   configure_pose_feedforward(parameters);
   frame_id_ = get_string_param(parameters, "frame_id", context.model->left_tip_frame());
+  configure_offset(parameters, frame_id_, true);
   const auto gains = get_double_array_param(parameters, "gain", {1.0, 1.0, 1.0, 1.0, 1.0, 1.0});
   for (size_t i = 0; i < 6 && i < gains.size(); ++i) {
     gains_(static_cast<Eigen::Index>(i)) = gains[i];
@@ -45,7 +46,13 @@ TaskComputation EndEffectorPoseTask::update(
     return computation;
   }
 
-  const FrameState frame = backend.get_frame_state(frame_id_);
+  FrameState frame = backend.get_frame_state(frame_id_);
+  std::string offset_message;
+  if (!apply_controlled_offset(frame, offset_message)) {
+    computation.active = false;
+    computation.status_message = offset_message;
+    return computation;
+  }
   if (!frame.pose.matrix().allFinite()) {
     computation.active = false;
     computation.status_message = "frame pose unavailable";

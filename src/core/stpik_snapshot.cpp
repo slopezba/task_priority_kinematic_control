@@ -290,6 +290,9 @@ std::string StpikTaskAccess::key(const TaskBase & task)
     append(out, pose->feedforward_timeout_);
     if (pose->feedforward_.norm() > 0.0) {append(out, pose->feedforward_time_);}
   }
+  // Which point a pose task controls (tool or offset point) changes what the probe validated; the offset
+  // value itself is not part of the key because it varies continuously with the measurement.
+  if (const auto * pose = dynamic_cast<const PoseTaskCommon *>(&task)) {append(out, pose->use_offset());}
   if (typeid(task) == typeid(FramePoseTask)) {
     const auto & source = static_cast<const FramePoseTask &>(task);
     append(out, source.frame_id_);

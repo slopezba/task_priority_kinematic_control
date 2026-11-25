@@ -35,11 +35,47 @@ Eigen::MatrixXd base_jacobian_for_model(const WholeBodyModel & model)
   }
   return jacobian;
 }
+
+void apply_tool_offset(FrameState & frame, const Eigen::Isometry3d & offset)
+{
+  const Eigen::Vector3d p = frame.pose.rotation() * offset.translation();
+  Eigen::Matrix3d skew;
+  skew << 0.0, -p.z(), p.y(),
+    p.z(), 0.0, -p.x(),
+    -p.y(), p.x(), 0.0;
+  if (frame.jacobian.rows() >= 6) {
+    frame.jacobian.topRows(3) -= skew * frame.jacobian.bottomRows(3);
+  }
+  frame.pose = frame.pose * offset;
+}
+
+FrameState compute_tip_state(const KinematicsBackend & backend, const WholeBodyState & state,
+  const std::string & frame, const TaskBase * task)
+{
+  FrameState result = backend.compute_frame_state(state, frame);
+  if (const auto * pose_task = dynamic_cast<const PoseTaskCommon *>(task)) {
+    if (const auto offset = pose_task->active_offset()) {apply_tool_offset(result, *offset);}
+  }
+  return result;
+}
 }  // namespace pose_math
 
 PoseTaskCommon::PoseTaskCommon(const PoseTaskCommon & other)
 : TaskBaseCommon(other)
 {
+  {
+    std::scoped_lock offset_lock(other.offset_mutex_);
+    offset_supported_ = other.offset_supported_;
+    use_offset_ = other.use_offset_;
+    offset_ = other.offset_;
+    offset_frame_ = other.offset_frame_;
+    // Copies run offline (STPIK probes, with their own clock and for far longer than offset_timeout):
+    // the offset is frozen as it was at copy time, valid only if it was fresh then.
+    offset_valid_ = other.offset_fresh_locked();
+    offset_time_ = other.offset_time_;
+    offset_timeout_ = 0.0;
+    force_capture_target_ = other.force_capture_target_;
+  }
   std::scoped_lock lock(other.feedforward_mutex_);
   feedforward_ = other.feedforward_;
   feedforward_epoch_ = other.feedforward_epoch_;
@@ -68,9 +104,125 @@ void PoseTaskCommon::configure_pose_feedforward(
   reset();
 }
 
+void PoseTaskCommon::configure_offset(
+  const std::map<std::string, rclcpp::Parameter> & parameters, const std::string & frame_id,
+  bool supported)
+{
+  const bool use = get_bool_param(parameters, "use_offset", false);
+  const double timeout = get_double_param(parameters, "offset_timeout", 0.5);
+  if (!std::isfinite(timeout) || timeout < 0.0) {
+    throw std::invalid_argument("offset_timeout must be finite and non-negative");
+  }
+  if (use && !supported) {
+    throw std::invalid_argument("use_offset is not supported for the base frame");
+  }
+  std::scoped_lock lock(offset_mutex_);
+  offset_supported_ = supported;
+  offset_frame_ = frame_id;
+  offset_timeout_ = timeout;
+  offset_valid_ = false;
+  // Enabled from the YAML: the task waits (inactive) until an offset arrives; it never falls back to
+  // the plain frame.
+  use_offset_ = use;
+  force_capture_target_ = false;
+}
+
+bool PoseTaskCommon::offset_fresh_locked() const
+{
+  return offset_valid_ && (offset_timeout_ <= 0.0 ||
+    std::chrono::duration<double>(steady_now() - offset_time_).count() <= offset_timeout_);
+}
+
+bool PoseTaskCommon::use_offset() const
+{
+  std::scoped_lock lock(offset_mutex_);
+  return use_offset_;
+}
+
+bool PoseTaskCommon::offset_ready() const
+{
+  std::scoped_lock lock(offset_mutex_);
+  return offset_fresh_locked();
+}
+
+std::string PoseTaskCommon::offset_frame() const
+{
+  std::scoped_lock lock(offset_mutex_);
+  return offset_frame_;
+}
+
+bool PoseTaskCommon::set_offset(const Eigen::Isometry3d & offset)
+{
+  if (!offset.matrix().allFinite()) {return false;}
+  std::scoped_lock lock(offset_mutex_);
+  offset_ = offset;
+  offset_time_ = steady_now();
+  offset_valid_ = true;
+  return true;
+}
+
+bool PoseTaskCommon::set_use_offset(bool use, std::string & message)
+{
+  {
+    std::scoped_lock lock(offset_mutex_);
+    if (!offset_supported_) {
+      message = "This task cannot control an offset point";
+      return false;
+    }
+    if (use == use_offset_) {
+      message = "Offset use unchanged";
+      return true;
+    }
+    if (use && !offset_fresh_locked()) {
+      message = "No fresh offset received; cannot enable use_offset";
+      return false;
+    }
+    use_offset_ = use;
+    force_capture_target_ = true;
+  }
+  clear_feedforward();
+  message = use ? "Controlling the offset point" : "Controlling the task frame";
+  return true;
+}
+
+std::optional<Eigen::Isometry3d> PoseTaskCommon::active_offset() const
+{
+  std::scoped_lock lock(offset_mutex_);
+  if (!use_offset_ || !offset_fresh_locked()) {return std::nullopt;}
+  return offset_;
+}
+
+bool PoseTaskCommon::apply_controlled_offset(FrameState & frame, std::string & message) const
+{
+  Eigen::Isometry3d offset;
+  {
+    std::scoped_lock lock(offset_mutex_);
+    if (!use_offset_) {return true;}
+    if (!offset_fresh_locked()) {
+      message = offset_valid_ ? "offset stale" : "waiting for offset";
+      return false;
+    }
+    offset = offset_;
+  }
+  pose_math::apply_tool_offset(frame, offset);
+  return true;
+}
+
 bool PoseTaskCommon::set_feedforward_option(
   const std::string & field, const rclcpp::Parameter & parameter, std::string & message)
 {
+  if (field == "use_offset" && parameter.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
+    return set_use_offset(parameter.as_bool(), message);
+  }
+  if (field == "offset_timeout" && parameter.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
+    const double timeout = parameter.as_double();
+    if (std::isfinite(timeout) && timeout >= 0.0) {
+      std::scoped_lock lock(offset_mutex_);
+      offset_timeout_ = timeout;
+      message = "Offset timeout changed";
+      return true;
+    }
+  }
   if (field == "auto_update_target_pose" && parameter.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
     const bool automatic = parameter.as_bool();
     if (automatic && !auto_update_target_pose_) {initialize_target_ = true;}
@@ -86,7 +238,7 @@ bool PoseTaskCommon::set_feedforward_option(
       return true;
     }
   }
-  message = "Invalid pose feedforward option: expected bool or finite non-negative threshold";
+  message = "Invalid pose option: expected bool or finite non-negative threshold/timeout";
   return false;
 }
 
@@ -151,8 +303,15 @@ void PoseTaskCommon::update_pose_target(
   const PoseVelocity & activation)
 {
   computation.feedforward = pose_feedforward().cwiseProduct(activation);
-  if (auto_update_target_pose_ &&
-    (initialize_target_ || computation.feedforward.norm() > feedforward_velocity_threshold_))
+  bool force_capture = false;
+  {
+    std::scoped_lock lock(offset_mutex_);
+    force_capture = force_capture_target_;
+    force_capture_target_ = false;
+  }
+  if ((auto_update_target_pose_ || force_capture) &&
+    (initialize_target_ || force_capture ||
+    computation.feedforward.norm() > feedforward_velocity_threshold_))
   {
     pose_goal_.header.frame_id = context_.model->world_frame();
     pose_goal_.pose.position.x = pose.translation().x();

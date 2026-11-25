@@ -639,6 +639,49 @@ Esto incluye:
 
 y, por la lógica actual del código, cualquier plugin cuyo nombre contenga `PoseTask`.
 
+### Punto controlado con offset (`use_offset`)
+
+`EndEffectorPoseTask`, `EndEffectorPositionTask` y `FramePoseTask` (con un `frame_id` distinto de la base)
+pueden controlar un punto desplazado del frame de la tarea, por ejemplo la punta de una brida sujeta por la
+pinza, en lugar del frame. Con `use_offset` activo la tarea controla `T_mundo_frame · T_frame_offset`: la pose
+se desplaza y el Jacobiano se corrige (`J_lin ← J_lin − skew(R·t)·J_ang`, `J_ang` no cambia). La pose
+publicada en el estado de la tarea (`frame_pose`) y la captura automática del objetivo usan ese punto.
+
+| Parámetro | Tipo | Descripción |
+| --- | --- | --- |
+| `use_offset` | bool | `false` por defecto. Se puede cambiar en caliente (`ros2 param set`). Nunca se activa solo al llegar datos. |
+| `offset_timeout` | double | Segundos que un offset sigue siendo válido, medidos desde su **recepción**. 0 desactiva la caducidad. Por defecto 0.5. También cambia en caliente. |
+
+Entrada del offset (pose del punto respecto al frame de la tarea, `PoseStamped`; el `frame_id` debe estar vacío o
+ser el `frame_id` de la tarea, y la pose finita con cuaternión no nulo; si no, se descarta como si no hubiera llegado):
+
+```text
+/cirtesub/alpha/controller/task_priority/tasks/<task_id>/offset
+```
+
+Comportamiento:
+
+- Poner `use_offset:=true` **se rechaza** si no hay un offset reciente. Poner `false` siempre se acepta.
+- Al cambiar de punto (en cualquier sentido) el objetivo se recaptura en la pose del nuevo punto, incluso con
+  `auto_update_target_pose: false`, para que el brazo no salte la longitud del offset. Después, los cambios
+  del offset **no** recapturan: el objetivo queda fijo en el mundo y el error aparece.
+- Con `use_offset: true` y offset ausente o caducado la tarea queda inactiva (`waiting for offset` /
+  `offset stale`) y no aporta movimiento; nunca usa el frame sin offset en silencio.
+- Con la base como frame (`frame_id == base_frame`) no se admite offset.
+- Estado: cada tarea con soporte publica `.../<task_id>/use_offset` (`std_msgs/Bool`, `transient_local`) al
+  cambiar. `task_priority_target_markers` lo usa para dibujar un frame de ejes (`frame_visual_scale`) en lugar
+  de las pinzas en `left_pose` y `right_pose`.
+
+Con el backend **Pose** de `sura_manipulation_actions`, `use_offset` hace que el planificador trabaje con la
+pose de la punta (ver su guía cartesiana de un brazo). Las acciones STPIK de comprobación y de preparación de
+postura (`posture_action`, `initial_posture`, `nominal_trajectory`) usan el mismo punto controlado: las sondas copian
+la tarea con el offset **congelado** tal como estaba al capturar la instantánea, porque simulan durante mucho más
+que `offset_timeout`.
+
+Límites actuales: no afecta a las tareas de límites ni de manipulabilidad, a las relativas entre brazos, a los
+backends `controller`/`task` del planificador (MoveIt) ni al coordinador `FollowCartesianTrajectory`, que siguen
+usando el frame del tool.
+
 ### Objetivos articulares nominales
 
 Para `JointNominalTask`:

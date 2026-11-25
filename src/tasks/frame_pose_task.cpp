@@ -20,6 +20,7 @@ void FramePoseTask::configure(
   configure_common(id, plugin_name, parameters, context);
   configure_pose_feedforward(parameters);
   frame_id_ = get_string_param(parameters, "frame_id", context.model->base_frame());
+  configure_offset(parameters, frame_id_, frame_id_ != context.model->base_frame());
   activation_.setOnes();
   const auto mask = parameters.find("activation");
   if (mask != parameters.end()) {
@@ -66,7 +67,13 @@ TaskComputation FramePoseTask::update(
     current_pose = base_pose_from_state(state);
     jacobian = base_jacobian_for_model(*context_.model);
   } else {
-    const FrameState frame = backend.get_frame_state(frame_id_);
+    FrameState frame = backend.get_frame_state(frame_id_);
+    std::string offset_message;
+    if (!apply_controlled_offset(frame, offset_message)) {
+      computation.active = false;
+      computation.status_message = offset_message;
+      return computation;
+    }
     current_pose = frame.pose;
     jacobian = frame.jacobian;
   }

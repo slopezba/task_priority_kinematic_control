@@ -2,10 +2,12 @@
 
 #include "task_priority_kinematic_control/tasks/pose_task_common.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include <rclcpp/message_info.hpp>
 #include <atomic>
+#include <cmath>
 #include <map>
 #include <stdexcept>
 #include <functional>
@@ -38,6 +40,9 @@ public:
     std::scoped_lock callback_lock(callback_mutex_);
     subscriptions_.clear();
     publishers_.clear();
+    offset_subscriptions_.clear();
+    use_offset_publishers_.clear();
+    published_use_offset_.clear();
     tasks_.clear();
     listener_.reset();
     buffer_ = std::make_unique<tf2_ros::Buffer>(node->get_clock());
@@ -49,6 +54,39 @@ public:
       tasks_[task->id()] = pose_task;
       publishers_[task->id()] = node->template create_publisher<geometry_msgs::msg::PoseStamped>(
         prefix + "/target", rclcpp::SystemDefaultsQoS());
+      // Offset of the controlled point (e.g. zip-tie tip) in the task frame. Only stored here; the task
+      // uses it when use_offset is on. A rejected message counts as not received.
+      offset_subscriptions_[task->id()] =
+        node->template create_subscription<geometry_msgs::msg::PoseStamped>(
+        prefix + "/offset", rclcpp::QoS(1),
+        [this, weak = std::weak_ptr<PoseTaskCommon>(pose_task), clock = node->get_clock(),
+        logger = node->get_logger()](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+          auto task = weak.lock();
+          if (!task || !msg || !active_.load()) {return;}
+          const auto & p = msg->pose.position;
+          const auto & o = msg->pose.orientation;
+          Eigen::Quaterniond q(o.w, o.x, o.y, o.z);
+          const std::string expected = task->offset_frame();
+          if (!msg->header.frame_id.empty() && !expected.empty() && msg->header.frame_id != expected) {
+            RCLCPP_WARN_THROTTLE(logger, *clock, 2000,
+              "Offset for '%s' ignored: expressed in '%s', expected '%s'", task->id().c_str(),
+              msg->header.frame_id.c_str(), expected.c_str());
+            return;
+          }
+          if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+            !q.coeffs().allFinite() || q.norm() < 1e-6)
+          {
+            RCLCPP_WARN_THROTTLE(logger, *clock, 2000, "Offset for '%s' ignored: invalid pose",
+              task->id().c_str());
+            return;
+          }
+          Eigen::Isometry3d offset = Eigen::Isometry3d::Identity();
+          offset.translation() = Eigen::Vector3d(p.x, p.y, p.z);
+          offset.linear() = q.normalized().toRotationMatrix();
+          task->set_offset(offset);
+        });
+      use_offset_publishers_[task->id()] = node->template create_publisher<std_msgs::msg::Bool>(
+        prefix + "/use_offset", rclcpp::QoS(1).reliable().transient_local());
       subscriptions_[task->id()] =
         node->template create_subscription<geometry_msgs::msg::TwistStamped>(
         prefix + "/feedforward", rclcpp::QoS(1),
@@ -120,6 +158,20 @@ public:
     const std::vector<TaskComputation> & outputs, const rclcpp::Time & time,
     const std::string & world_frame)
   {
+    // Latched state of each task's controlled point (true = offset point), published on change so
+    // the target markers can draw a frame instead of the gripper.
+    for (const auto & entry : use_offset_publishers_) {
+      const auto task = tasks_.find(entry.first);
+      const auto live = task == tasks_.end() ? nullptr : task->second.lock();
+      if (!live) {continue;}
+      const bool now = live->use_offset();
+      const auto last = published_use_offset_.find(entry.first);
+      if (last != published_use_offset_.end() && last->second == now) {continue;}
+      published_use_offset_[entry.first] = now;
+      std_msgs::msg::Bool state;
+      state.data = now;
+      entry.second->publish(state);
+    }
     for (size_t i = 0; i < tasks.size() && i < outputs.size(); ++i) {
       const auto publisher = publishers_.find(tasks[i]->id());
       if (publisher == publishers_.end() || !outputs[i].has_updated_target) {continue;}
@@ -141,5 +193,8 @@ private:
   std::map<std::string, std::weak_ptr<PoseTaskCommon>> tasks_;
   std::map<std::string, rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr> subscriptions_;
   std::map<std::string, rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr> publishers_;
+  std::map<std::string, rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr> offset_subscriptions_;
+  std::map<std::string, rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr> use_offset_publishers_;
+  std::map<std::string, bool> published_use_offset_;
 };
 }  // namespace task_priority_kinematic_control

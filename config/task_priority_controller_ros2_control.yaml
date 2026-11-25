@@ -121,6 +121,8 @@ task_priority_controller:
     tasks.left_pose.priority: 2.0
     tasks.left_pose.group: left
     tasks.left_pose.frame_id: cirtesub/alpha_left/standard_jaws_tool
+    tasks.left_pose.use_offset: false
+    tasks.left_pose.offset_timeout: 0.5
     tasks.left_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
 
     tasks.right_pose.plugin: task_priority_kinematic_control/EndEffectorPoseTask
@@ -130,6 +132,8 @@ task_priority_controller:
     tasks.right_pose.priority: 1.0
     tasks.right_pose.group: right
     tasks.right_pose.frame_id: cirtesub/alpha_right/standard_jaws_tool
+    tasks.right_pose.use_offset: false
+    tasks.right_pose.offset_timeout: 0.5
     tasks.right_pose.gain: [1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
 
     tasks.EndEffectors_Relative_pose.plugin: task_priority_kinematic_control/EndEffectorsRelativePoseTask

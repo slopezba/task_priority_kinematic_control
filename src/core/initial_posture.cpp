@@ -644,7 +644,8 @@ PosturePlan optimize_posture(
   {
     auto center = p.target;
     const V x = coords(center);
-    const auto frame = p.snapshot.backend->compute_frame_state(center, goal.tip_frame);
+    const auto frame = pose_math::compute_tip_state(*p.snapshot.backend, center, goal.tip_frame,
+      find(p.snapshot.tasks, goal.task_id).get());
     M a = M::Zero(n + 7, n);
     a.topRows(n) = identity;
     a.middleRows(n, 6) = frame.jacobian;
@@ -683,7 +684,8 @@ PosturePlan optimize_posture(
         if (!solve_posture_step(identity, gradient, a, lb, ub, hierarchy, step) ||
             step.norm() < 1e-5) {return;}
         auto candidate = with_coordinates(center, x + step);
-        const auto tip = p.snapshot.backend->compute_frame_state(candidate, goal.tip_frame);
+        const auto tip = pose_math::compute_tip_state(*p.snapshot.backend, candidate, goal.tip_frame,
+          find(p.snapshot.tasks, goal.task_id).get());
         if (tip_within(tip.pose, goal)) {
           attempt(candidate);
         }

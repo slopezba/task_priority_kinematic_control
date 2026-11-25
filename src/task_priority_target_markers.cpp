@@ -11,6 +11,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "interactive_markers/interactive_marker_server.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "visualization_msgs/msg/interactive_marker.hpp"
 #include "visualization_msgs/msg/interactive_marker_control.hpp"
 #include "visualization_msgs/msg/interactive_marker_feedback.hpp"
@@ -221,6 +222,7 @@ public:
     base_visual_scale_ = declare_parameter<double>("base_visual_scale", 1.0);
     end_effector_visual_scale_ = declare_parameter<double>("end_effector_visual_scale", 1.0);
     fallback_sphere_scale_ = declare_parameter<double>("fallback_sphere_scale", 0.18);
+    frame_visual_scale_ = declare_parameter<double>("frame_visual_scale", 0.12);
 
     configure_tasks();
     RCLCPP_INFO(
@@ -242,6 +244,9 @@ private:
     std::unique_ptr<interactive_markers::InteractiveMarkerServer> server;
     rclcpp::Publisher<PoseStamped>::SharedPtr publisher;
     rclcpp::Subscription<PoseStamped>::SharedPtr subscription;
+    // The task controls an offset point (e.g. the zip-tie tip): draw a frame instead of the gripper.
+    bool use_offset = false;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr offset_subscription;
   };
 
   void configure_tasks()
@@ -275,6 +280,15 @@ private:
         {
           handle_target(task_id, msg);
         });
+      if (task_id == left_task_id_ || task_id == right_task_id_) {
+        stored_task.offset_subscription = create_subscription<std_msgs::msg::Bool>(
+          task_topic_prefix_ + "/" + task_id + "/use_offset",
+          rclcpp::QoS(1).reliable().transient_local(),
+          [this, task_id](const std_msgs::msg::Bool::SharedPtr msg)
+          {
+            handle_use_offset(task_id, msg->data);
+          });
+      }
 
       RCLCPP_INFO(
         get_logger(),
@@ -348,6 +362,20 @@ private:
     }
   }
 
+  void handle_use_offset(const std::string & task_id, bool use_offset)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto task_it = tasks_.find(task_id);
+    if (task_it == tasks_.end() || task_it->second.use_offset == use_offset) {
+      return;
+    }
+    auto & task = task_it->second;
+    task.use_offset = use_offset;
+    if (task.has_target) {
+      rebuild_marker_locked(task);
+    }
+  }
+
   void handle_feedback(const InteractiveMarkerFeedback::ConstSharedPtr & feedback)
   {
     if (!feedback || feedback->event_type != InteractiveMarkerFeedback::POSE_UPDATE) {
@@ -417,9 +445,11 @@ private:
     if (task.task_id == base_task_id_) {
       add_base_visual(marker);
     } else if (task.task_id == left_task_id_) {
-      add_gripper_visual(marker, Color{0.0F, 0.9F, 1.0F, 0.55F});
+      if (task.use_offset) {add_frame_visual(marker);}
+      else {add_gripper_visual(marker, Color{0.0F, 0.9F, 1.0F, 0.55F});}
     } else if (task.task_id == right_task_id_) {
-      add_gripper_visual(marker, Color{0.2F, 1.0F, 0.35F, 0.55F});
+      if (task.use_offset) {add_frame_visual(marker);}
+      else {add_gripper_visual(marker, Color{0.2F, 1.0F, 0.35F, 0.55F});}
     } else {
       const Color color{1.0F, 1.0F, 1.0F, 0.65F};
       marker.controls.push_back(visual_control({
@@ -441,6 +471,29 @@ private:
         body_color,
         base_visual_scale_,
         mesh_pose)}));
+  }
+
+  // Axes of the controlled point (x red, y green, z blue) instead of the gripper meshes.
+  void add_frame_visual(InteractiveMarker & marker) const
+  {
+    auto arrow = [this](const Color & color, double roll, double pitch, double yaw) {
+      Marker m;
+      m.type = Marker::ARROW;
+      m.pose.orientation = quaternion_from_rpy(roll, pitch, yaw);
+      m.scale.x = frame_visual_scale_;
+      m.scale.y = frame_visual_scale_ * 0.08;
+      m.scale.z = frame_visual_scale_ * 0.16;
+      m.color.r = color.r;
+      m.color.g = color.g;
+      m.color.b = color.b;
+      m.color.a = color.a;
+      return m;
+    };
+    constexpr double kHalfPi = 1.5707963267948966;
+    marker.controls.push_back(visual_control({
+      arrow(Color{1.0F, 0.1F, 0.1F, 0.9F}, 0.0, 0.0, 0.0),
+      arrow(Color{0.1F, 1.0F, 0.1F, 0.9F}, 0.0, 0.0, kHalfPi),
+      arrow(Color{0.2F, 0.4F, 1.0F, 0.9F}, 0.0, -kHalfPi, 0.0)}));
   }
 
   void add_gripper_visual(InteractiveMarker & marker, const Color & color) const
@@ -500,6 +553,7 @@ private:
   double base_visual_scale_{1.0};
   double end_effector_visual_scale_{1.0};
   double fallback_sphere_scale_{0.18};
+  double frame_visual_scale_{0.12};
 };
 
 }  // namespace task_priority_kinematic_control

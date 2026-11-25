@@ -317,6 +317,8 @@ void TaskPriorityController::declare_task_parameters()
       "task_priority_kinematic_control/StabilizeLimitsTask";
     auto_declare_if_missing(this, prefix + "enabled", true);
     auto_declare_if_missing(this, prefix + "auto_update_target_pose", true);
+    auto_declare_if_missing(this, prefix + "use_offset", false);
+    auto_declare_if_missing(this, prefix + "offset_timeout", 0.5);
     auto_declare_if_missing(this, prefix + "roll_pitch_control", false);
     auto_declare_if_missing(this, prefix + "allow_roll_pitch", false);
     auto_declare_if_missing(this, prefix + "feedforward_timeout", 0.0);
@@ -870,7 +872,9 @@ rcl_interfaces::msg::SetParametersResult TaskPriorityController::on_parameters_s
       }
 
       std::string message;
-      if (field == "auto_update_target_pose" || field == "feedforward_velocity_threshold") {
+      if (field == "auto_update_target_pose" || field == "feedforward_velocity_threshold" ||
+        field == "use_offset" || field == "offset_timeout")
+      {
         if (!task_manager_->set_task_pose_feedforward_option(task_id, field, parameter, message)) {
           result.successful = false;
           result.reason = message;

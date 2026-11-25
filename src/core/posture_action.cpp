@@ -300,6 +300,8 @@ void PostureAction::apply(
       tasks, p.request.task_id, p.simulation.numerical_tolerance, p.options.equality_tolerance);
     validate_tasks(manager_.computations());
     const auto commands = prepare_tasks(tasks, *model_, p.request);
+    TaskBase * pose_task = nullptr;
+    for (const auto & task : tasks) {if (task->id() == p.request.task_id) {pose_task = task.get();}}
     const auto start = state_;
     int64_t previous = start.ros_time_ns;
     while (true) {
@@ -311,7 +313,9 @@ void PostureAction::apply(
       if (state_.ros_time_ns < previous) {throw std::runtime_error("ROS clock moved backwards");}
       previous = state_.ros_time_ns;
       double time = (previous - start.ros_time_ns) * 1e-9;
-      auto tip = backend_->compute_frame_state(state_, p.request.tip_frame);
+      // With an offset on the pose task, the preparation request is expressed for the controlled point.
+      auto tip = pose_math::compute_tip_state(*backend_, state_, p.request.tip_frame,
+          pose_task);
       if (!tip_within(tip.pose, p.request)) {
         throw std::runtime_error("Tool moved outside preparation tolerance");
       }
