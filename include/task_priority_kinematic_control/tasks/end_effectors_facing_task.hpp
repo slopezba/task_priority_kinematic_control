@@ -21,6 +21,9 @@ namespace task_priority_kinematic_control
 //
 // Goal pointing axes must be pure signed axes (+-x, +-y, +-z); a streamed FacingReference may
 // move the pointing reference through any unit vector and adds an expiring feedforward.
+// After configure, reset or being enabled the task stays inactive (it commands nothing)
+// until it receives a FacingTarget or a FacingReference.
+//
 // The geometry is shared with the bimanual planner (facing_geometry.hpp).
 // The zero of the roll uses a cyclic reference axis per goal axis: +-x -> +-y, +-y -> +-z, +-z -> +-x (same sign as the pointing axis).
 // The roll is the signed angle around d from the left reference axis to the right one, both
@@ -85,6 +88,7 @@ private:
   double target_distance_ = 0.0;
   bool capture_roll_pending_ = true;
   bool capture_distance_pending_ = true;
+  bool awaiting_target_ = true;
   double min_distance_ = 0.02;
   Eigen::Matrix<double, 6, 1> gains_ = Eigen::Matrix<double, 6, 1>::Ones();
   Eigen::Matrix<bool, 6, 1> activation_ = Eigen::Matrix<bool, 6, 1>::Constant(true);

@@ -87,10 +87,16 @@ facing::Reference EndEffectorsFacingTask::reference() const
 bool EndEffectorsFacingTask::set_enabled(bool enabled)
 {
   feedforward_.setZero();
+  // A target received before this activation must not move the arms.
+  if (enabled && !enabled_) {awaiting_target_ = true;}
   return TaskBaseCommon::set_enabled(enabled);
 }
 
-void EndEffectorsFacingTask::reset() {restore_goal_reference();}
+void EndEffectorsFacingTask::reset()
+{
+  restore_goal_reference();
+  awaiting_target_ = true;
+}
 
 void EndEffectorsFacingTask::configure(
   const std::string & id,
@@ -133,6 +139,7 @@ void EndEffectorsFacingTask::configure(
   }
   if (feedforward_timeout_ == 0.0) {feedforward_timeout_ = 0.5;}
 
+  awaiting_target_ = true;
   capture_roll_pending_ = true;
   if (has_parameter(parameters, "roll_angle")) {
     const double roll = get_double_param(parameters, "roll_angle", 0.0);
@@ -189,6 +196,11 @@ TaskComputation EndEffectorsFacingTask::update(
   computation.has_frame_pose = true;
   computation.frame_id = right_frame_;
   computation.frame_pose = left.pose.inverse() * right.pose;
+  if (awaiting_target_) {
+    computation.active = false;
+    computation.status_message = "waiting for first target";
+    return computation;
+  }
 
   const Eigen::Index cols = left.jacobian.cols();
   if (right.jacobian.cols() != cols || left.jacobian.rows() < 6 || right.jacobian.rows() < 6) {
@@ -306,6 +318,7 @@ bool EndEffectorsFacingTask::set_facing_target(
     target_roll_ = wrapAngle(target.roll_angle);
     capture_roll_pending_ = false;
   }
+  awaiting_target_ = false;
   message = "Facing target updated";
   return true;
 }
@@ -356,6 +369,7 @@ bool EndEffectorsFacingTask::set_facing_reference(
   feedforward_ = enabled_ ?
     facing::feedforwardRows(next, rate) : Eigen::Matrix<double, 6, 1>::Zero();
   feedforward_time_ = steady_now();
+  awaiting_target_ = false;
   message = "Facing reference updated";
   return true;
 }

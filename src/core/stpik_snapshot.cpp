@@ -397,6 +397,7 @@ std::string StpikTaskAccess::key(const TaskBase & task, bool streamed)
     append(out, source.target_distance_);
     append(out, source.capture_roll_pending_);
     append(out, source.capture_distance_pending_);
+    append(out, source.awaiting_target_);
     append(out, source.min_distance_);
     append(out, source.gains_.transpose());
     append(out, source.activation_.transpose());

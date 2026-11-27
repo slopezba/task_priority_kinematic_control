@@ -489,7 +489,7 @@ las tareas de mantenimiento de la base no se reapuntan.
 `EndEffectorsFacingTask` acepta además `sura_manipulation_actions/msg/FacingReference`
 en `<prefijo de tareas>/<id>/facing_reference`: ejes de referencia unitarios, roll,
 distancia y sus derivadas como feedforward, que caduca tras `feedforward_timeout`
-(0.5 s). `facing_target` sigue funcionando y devuelve la referencia a los ejes puros.
+(0.5 s). Al configurarse, reiniciarse o habilitarse, la tarea no manda velocidades hasta recibir su primer `facing_target` o `facing_reference` (estado `waiting for first target`). `facing_target` sigue funcionando y devuelve la referencia a los ejes puros.
 
 ### `JointNominalTask`
 

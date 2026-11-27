@@ -93,16 +93,6 @@ std::map<std::string, rclcpp::Parameter> parameters(
   return out;
 }
 
-EndEffectorsFacingTask make_task(
-  const std::vector<double> & roll = {0.0}, const std::vector<double> & distance = {0.25})
-{
-  EndEffectorsFacingTask task;
-  task.configure(
-    "EndEffectors_Facing", "task_priority_kinematic_control/EndEffectorsFacingTask",
-    parameters(roll, distance), TaskContext{model()});
-  return task;
-}
-
 msg::FacingTarget target_msg(
   const Eigen::Vector3d & left_axis, const Eigen::Vector3d & right_axis,
   double roll, double distance)
@@ -117,6 +107,25 @@ msg::FacingTarget target_msg(
   out.roll_angle = roll;
   out.distance = distance;
   return out;
+}
+
+// The task commands nothing until its first target.
+void send_target(EndEffectorsFacingTask & task, double roll, double distance)
+{
+  std::string message;
+  EXPECT_TRUE(task.set_facing_target(
+    target_msg(Eigen::Vector3d::UnitZ(), Eigen::Vector3d::UnitZ(), roll, distance), message)) << message;
+}
+
+EndEffectorsFacingTask make_task(
+  const std::vector<double> & roll = {0.0}, const std::vector<double> & distance = {0.25})
+{
+  EndEffectorsFacingTask task;
+  task.configure(
+    "EndEffectors_Facing", "task_priority_kinematic_control/EndEffectorsFacingTask",
+    parameters(roll, distance), TaskContext{model()});
+  send_target(task, roll.front(), distance.front());
+  return task;
 }
 
 // Left at origin (identity), right on +z at `distance` with its z pointing back (-z).
@@ -163,6 +172,18 @@ void expect_jacobian_matches(
   }
 }
 
+}  // namespace
+
+namespace
+{
+sura_manipulation_actions::msg::FacingReference reference_msg(double distance)
+{
+  sura_manipulation_actions::msg::FacingReference out;
+  out.left_goal_axis.z = out.right_goal_axis.z = 1.0;
+  out.left_pointing_axis.z = out.right_pointing_axis.z = 1.0;
+  out.distance = distance;
+  return out;
+}
 }  // namespace
 
 TEST(EndEffectorsFacingTask, ReportsFacingTargetType)
@@ -277,6 +298,37 @@ TEST(EndEffectorsFacingTask, NanRollKeepsCurrentRoll)
   EXPECT_NEAR(task.current_target()[6], 0.7, 1e-9);
 }
 
+TEST(EndEffectorsFacingTask, CommandsNothingUntilTheFirstTargetAfterActivation)
+{
+  EndEffectorsFacingTask task;
+  task.configure(
+    "EndEffectors_Facing", "task_priority_kinematic_control/EndEffectorsFacingTask",
+    parameters({0.0}, {0.25}), TaskContext{model()});
+  WholeBodyState state;
+  const auto expect_waiting = [&]() {
+      const auto out = task.update(state, facing_backend(0.4));
+      EXPECT_FALSE(out.active);
+      EXPECT_EQ(out.status_message, "waiting for first target");
+    };
+  expect_waiting();
+  send_target(task, 0.0, 0.25);
+  EXPECT_TRUE(task.update(state, facing_backend(0.4)).active);
+  // Enabling an enabled task keeps its target; a new activation waits again.
+  task.set_enabled(true);
+  EXPECT_TRUE(task.update(state, facing_backend(0.4)).active);
+  task.set_enabled(false);
+  send_target(task, 0.0, 0.25);
+  task.set_enabled(true);
+  expect_waiting();
+  task.capture_measured_target(facing_backend(0.4));
+  expect_waiting();
+  std::string message;
+  ASSERT_TRUE(task.set_facing_reference(reference_msg(0.3), message)) << message;
+  EXPECT_TRUE(task.update(state, facing_backend(0.4)).active);
+  task.reset();
+  expect_waiting();
+}
+
 TEST(EndEffectorsFacingTask, MissingDistanceAndRollAreCaptured)
 {
   EndEffectorsFacingTask task;
@@ -284,6 +336,7 @@ TEST(EndEffectorsFacingTask, MissingDistanceAndRollAreCaptured)
     "EndEffectors_Facing", "task_priority_kinematic_control/EndEffectorsFacingTask",
     parameters(), TaskContext{model()});
   WholeBodyState state;
+  send_target(task, std::numeric_limits<double>::quiet_NaN(), 0.33);
   const auto out = task.update(state, facing_backend(0.33, 0.2));
   ASSERT_TRUE(out.active);
   EXPECT_LT(out.error.norm(), 1e-9);
@@ -325,6 +378,7 @@ TEST(EndEffectorsFacingTask, ActivationSelectsRows)
   task.configure(
     "EndEffectors_Facing", "task_priority_kinematic_control/EndEffectorsFacingTask",
     params, TaskContext{model()});
+  send_target(task, 0.0, 0.25);
   WholeBodyState state;
   const auto out = task.update(state, facing_backend(0.3));
   ASSERT_TRUE(out.active);
@@ -332,17 +386,6 @@ TEST(EndEffectorsFacingTask, ActivationSelectsRows)
   EXPECT_NEAR(out.error(4), -0.05, 1e-9);
 }
 
-namespace
-{
-sura_manipulation_actions::msg::FacingReference reference_msg(double distance)
-{
-  sura_manipulation_actions::msg::FacingReference out;
-  out.left_goal_axis.z = out.right_goal_axis.z = 1.0;
-  out.left_pointing_axis.z = out.right_pointing_axis.z = 1.0;
-  out.distance = distance;
-  return out;
-}
-}  // namespace
 
 TEST(EndEffectorsFacingTask, StreamedReferenceAcceptsNonPureAxesAndKeepsGoalRollZero)
 {
