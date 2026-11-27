@@ -67,6 +67,7 @@ add_library(${core_target} SHARED
   src/core/frame_orientation_norm_markers.cpp
   src/core/arm_manipulability_markers.cpp
   src/core/stpik_snapshot.cpp
+  src/core/local_prediction.cpp
   src/core/stpik_check.cpp
   src/core/initial_posture.cpp
   src/core/nominal_trajectory.cpp

@@ -26,6 +26,8 @@ struct StpikOptions
   double snapshot_joint_tolerance = 0.001;
   double snapshot_position_tolerance = 0.005;
   double snapshot_orientation_tolerance = 0.01;
+  double rejoin_position_tolerance = 0.005;
+  double rejoin_orientation_tolerance = 0.01;
   bool valid(std::string & reason) const;
   std::string configuration_key() const;
 };
@@ -40,6 +42,7 @@ struct StpikSnapshot
   std::vector<std::shared_ptr<TaskBase>> tasks;
   std::chrono::steady_clock::time_point captured;
   std::string configuration;
+  std::string streamed_pose;
   std::string unavailable_reason;
   const KinematicsBackend * source_backend = nullptr;  // Identity only; never dereferenced.
 };
@@ -81,7 +84,7 @@ public:
   // Caller serializes with the controller's task/state mutex. Never configures plugins.
   static StpikSnapshot capture(const WholeBodyState &, const std::shared_ptr<WholeBodyModel> &,
     const KinematicsBackendPtr &, const HierarchySolver &,
-    const std::vector<std::shared_ptr<TaskBase>> &);
+    const std::vector<std::shared_ptr<TaskBase>> &, const std::string & streamed_pose = {});
   static bool compatible(const StpikSnapshot &, const WholeBodyState &, const WholeBodyModel &,
     const KinematicsBackend *,
     const HierarchySolver &, const std::vector<std::shared_ptr<TaskBase>> &,
@@ -103,9 +106,9 @@ public:
 
 private:
   static std::shared_ptr<TaskBase> copy(const TaskBase &, std::string &);
-  static std::string key(const TaskBase &);
+  static std::string key(const TaskBase &, bool streamed);
   static std::string configuration(const WholeBodyModel &, const HierarchySolver &,
-    const std::vector<std::shared_ptr<TaskBase>> &);
+    const std::vector<std::shared_ptr<TaskBase>> &, const std::string & streamed_pose);
 };
 
 class StpikCheck
@@ -114,11 +117,21 @@ public:
   using Canceled = std::function<bool()>;
   using Progress = std::function<void(double, double)>;
   using ValidateTasks = std::function<void(const std::vector<TaskComputation> &)>;
+  struct Rollout
+  {
+    // Exact geometric reference and spatial velocity at local execution time.
+    std::function<void(double, Eigen::Isometry3d &, Eigen::Matrix<double, 6, 1> &)> target;
+    HierarchySolver::Prefix prefix;
+    std::function<void(double, const WholeBodyState &, const std::vector<TaskComputation> &,
+      const Eigen::Matrix<double, 6, 1> &, const HierarchySolver::Prefix &, WholeBodyCommand &)> command;
+    std::function<void(double, const Eigen::Isometry3d &)> observe_pose;
+    std::function<bool(double, const Eigen::Isometry3d &)> stop_when;
+  };
   // Consumes its private snapshot. Integration is purely kinematic, never hardware IO.
   static StpikAction::Result run(StpikSnapshot, const StpikAction::Goal &,
     const StpikOptions &, const Canceled & canceled = {}, const Progress & progress = {},
     const std::function<void(const WholeBodyState &, double)> & observe = {},
     const std::function<void(const WholeBodyState &, double)> & reference = {},
-    const ValidateTasks & validate_tasks = {});
+    const ValidateTasks & validate_tasks = {}, Rollout * rollout = nullptr);
 };
 }  // namespace task_priority_kinematic_control

@@ -162,6 +162,7 @@ void PostureAction::fill_nominal(const NominalPlan & plan, Preparation::Result &
 {
   result.nominal_joints = plan.joints;
   result.nominal_base = plan.base;
+  result.nominal_progress = plan.progress;
   result.nominal_method = plan.method;
   result.nominal_cost = plan.cost;
 }
@@ -171,7 +172,32 @@ void PostureAction::run(const std::shared_ptr<Handle> & h)
   auto canceled = [&] {return cancel_.load() || h->is_canceling() || !rclcpp::ok();};
   try {
     const auto & g = *h->get_goal();
-    if (g.operation == g.PLAN) {
+    if (!g.facing_path.points.empty()) {
+      // End-effectors facing: the whole trajectory starts at the measured posture, so there
+      // is no repositioning to apply; only PLAN is defined.
+      if (g.operation != g.PLAN) {throw std::runtime_error("Facing nominal plans have no APPLY step");}
+      plan_.reset();
+      nominal_.reset();
+      StpikSnapshot snapshot;
+      {
+        std::scoped_lock lock(mutex_);
+        if (!ready_() || coordinator_.owns_tasks()) {
+          throw std::runtime_error("Controller unavailable or reserved");
+        }
+        snapshot = StpikTaskAccess::capture(state_, model_, backend_, solver_, manager_.tasks());
+      }
+      auto nominal = optimize_nominal_trajectory(
+        snapshot, g, StpikCheckIO::read_options(node_.get()), settings(), nominal_settings(), canceled,
+        [&](const std::string & stage) {
+          auto f = std::make_shared<Preparation::Feedback>(); f->stage = stage;
+          h->publish_feedback(f);
+        }, nullptr, false);
+      fill_nominal(nominal, *r);
+      r->proposal.cost = nominal.cost;
+      r->proposal.minimum_clearance = nominal.validation.minimum_clearance;
+      r->proposal.preparation_id =
+        static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+    } else if (g.operation == g.PLAN) {
       plan_.reset();
       StpikSnapshot snapshot;
       {

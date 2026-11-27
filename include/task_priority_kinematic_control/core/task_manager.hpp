@@ -4,6 +4,7 @@
 #include "task_priority_kinematic_control/tasks/task_base.hpp"
 
 #include "task_priority_kinematic_control/msg/task_status.hpp"
+#include "sura_manipulation_actions/msg/facing_reference.hpp"
 #include "task_priority_kinematic_control/msg/facing_target.hpp"
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -61,6 +62,10 @@ public:
   bool set_task_joint_target(
     const std::string & task_id,
     const std::vector<double> & target,
+    std::string & message);
+  bool set_task_facing_reference(
+    const std::string & task_id,
+    const sura_manipulation_actions::msg::FacingReference & reference,
     std::string & message);
   bool set_task_facing_target(
     const std::string & task_id,

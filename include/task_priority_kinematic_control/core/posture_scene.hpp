@@ -79,6 +79,28 @@ public:
     distance = std::min(distance, result.minimum_distance.distance);
     return std::isfinite(distance) ? distance : std::numeric_limits<double>::infinity();
   }
+  bool prismatic(size_t index) const
+  {
+    return scene_->getRobotModel()->getJointOfVariable(names_.at(index))->getType() ==
+      moveit::core::JointModel::PRISMATIC;
+  }
+  bool continuous(size_t index) const
+  {
+    const auto * joint = scene_->getRobotModel()->getJointOfVariable(names_.at(index));
+    return joint->getType() == moveit::core::JointModel::REVOLUTE &&
+      !joint->getVariableBounds().front().position_bounded_;
+  }
+  bool within_model_limits(const WholeBodyState & state, const Eigen::VectorXd & joint_velocity) const
+  {
+    for (size_t i = 0; i < names_.size(); ++i) {
+      const auto & bounds = scene_->getRobotModel()->getVariableBounds(names_[i]);
+      if ((bounds.position_bounded_ && (state.joint_positions(i) < bounds.min_position_ ||
+        state.joint_positions(i) > bounds.max_position_)) ||
+        (bounds.velocity_bounded_ && (joint_velocity(i) < bounds.min_velocity_ ||
+        joint_velocity(i) > bounds.max_velocity_))) {return false;}
+    }
+    return true;
+  }
   double world_clearance() const {return world_clearance_;}
   std::string collision_diagnostic() const
   {

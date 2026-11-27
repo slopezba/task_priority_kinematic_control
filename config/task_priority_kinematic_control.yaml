@@ -141,10 +141,10 @@ task_priority_runtime:
     tasks.EndEffectors_Facing.enabled: false
     tasks.EndEffectors_Facing.priority: 2.0
     tasks.EndEffectors_Facing.group: bimanual
-    tasks.EndEffectors_Facing.left_frame: cirtesub/alpha_left/ee_base_link
-    tasks.EndEffectors_Facing.right_frame: cirtesub/alpha_right/ee_base_link
-    tasks.EndEffectors_Facing.left_pointing_axis: [0.0, 0.0, 1.0]
-    tasks.EndEffectors_Facing.right_pointing_axis: [0.0, 0.0, 1.0]
+    tasks.EndEffectors_Facing.left_frame: cirtesub/alpha_left/standard_jaws_tool
+    tasks.EndEffectors_Facing.right_frame: cirtesub/alpha_right/standard_jaws_tool
+    tasks.EndEffectors_Facing.left_pointing_axis: [1.0, 0.0, 0.0]
+    tasks.EndEffectors_Facing.right_pointing_axis: [1.0, 0.0, 0.0]
     tasks.EndEffectors_Facing.min_distance: 0.02
     tasks.EndEffectors_Facing.gain: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
     tasks.EndEffectors_Facing.activation: [1, 1, 1, 1, 1, 1]

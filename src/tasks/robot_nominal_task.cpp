@@ -97,7 +97,7 @@ TaskComputation RobotNominalTask::update(const WholeBodyState & state, const Kin
   const auto & axes = context_.model->active_base_dofs();
   std::vector<size_t> active;
   for (size_t row = 0; row < rows(); ++row) {
-    if (!activation_[row]) {continue;}
+    if (!activation_[row] || (!reference_mask_.empty() && !reference_mask_[row])) {continue;}
     if (row < 6 && std::find(axes.begin(), axes.end(), static_cast<int>(row)) == axes.end()) {continue;}
     active.push_back(row);
   }
@@ -141,8 +141,12 @@ TaskComputation RobotNominalTask::update(const WholeBodyState & state, const Kin
 }
 
 bool RobotNominalTask::set_reference(const Coordinates & base, const Coordinates & base_rates,
-  const Eigen::VectorXd & joints, const Eigen::VectorXd & joint_velocities, std::string & message)
+  const Eigen::VectorXd & joints, const Eigen::VectorXd & joint_velocities, std::string & message,
+  const std::vector<bool> & mask)
 {
+  if (!mask.empty() && mask.size() != rows()) {
+    message = "robot_nominal reference mask needs 6 base rows plus every joint"; return false;
+  }
   if (!base.allFinite() || !base_rates.allFinite() || !joints.allFinite() || !joint_velocities.allFinite() ||
     joints.size() != static_cast<Eigen::Index>(joint_names_.size()) || joint_velocities.size() != joints.size())
   {message = "robot_nominal reference needs finite base and every model joint"; return false;}
@@ -151,6 +155,7 @@ bool RobotNominalTask::set_reference(const Coordinates & base, const Coordinates
   base_rates_ = enabled_ ? base_rates : Coordinates::Zero();
   joint_target_ = joints;
   joint_velocity_ = enabled_ ? joint_velocities : Eigen::VectorXd::Zero(joints.size());
+  reference_mask_ = mask;
   has_reference_ = true;
   reference_time_ = steady_now();
   message = "robot_nominal reference updated";
@@ -201,12 +206,19 @@ bool RobotNominalTask::set_reference(
       Eigen::Vector3d(reference.base_twist.angular.x, reference.base_twist.angular.y,
       reference.base_twist.angular.z);
   }
-  return set_reference(base, rates, joints, velocity, message);
+  return set_reference(base, rates, joints, velocity, message, reference.activation);
+}
+
+bool RobotNominalTask::base_masked() const
+{
+  return !reference_mask_.empty() &&
+         std::none_of(reference_mask_.begin(), reference_mask_.begin() + 6, [](bool value) {return value;});
 }
 
 void RobotNominalTask::clear_reference()
 {
   has_reference_ = false;
+  reference_mask_.clear();
   base_rates_.setZero();
   joint_velocity_.setZero();
   message_ = enabled_ ? "idle" : "disabled";
@@ -285,6 +297,8 @@ bool sync_holds(const std::vector<std::shared_ptr<TaskBase>> & tasks, const Robo
       [&](const auto & candidate) {return candidate->id() == id;});
     if (found == tasks.end()) {continue;}  // Optional holds may be absent in some setups.
     if (auto frame = std::dynamic_pointer_cast<FramePoseTask>(*found)) {
+      // A reference without base rows leaves the base hold where it was.
+      if (task.base_masked()) {continue;}
       if (frame->roll_pitch_control() || frame->frame_id() != model.base_frame()) {
         message = "robot_nominal can only synchronize base FramePoseTask holds: " + id; return false;
       }
@@ -308,9 +322,10 @@ bool sync_holds(const std::vector<std::shared_ptr<TaskBase>> & tasks, const Robo
 bool apply_robot_nominal_reference(
   const std::vector<std::shared_ptr<TaskBase>> & tasks, RobotNominalTask & task,
   const RobotNominalTask::Coordinates & base, const RobotNominalTask::Coordinates & base_rates,
-  const Eigen::VectorXd & joints, const Eigen::VectorXd & joint_velocities, std::string & message)
+  const Eigen::VectorXd & joints, const Eigen::VectorXd & joint_velocities, std::string & message,
+  const std::vector<bool> & mask)
 {
-  if (!task.set_reference(base, base_rates, joints, joint_velocities, message)) {return false;}
+  if (!task.set_reference(base, base_rates, joints, joint_velocities, message, mask)) {return false;}
   return sync_holds(tasks, task, task.model(), base, joints, message);
 }
 

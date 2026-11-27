@@ -2,6 +2,7 @@
 #include "task_priority_kinematic_control/core/posture_action.hpp"
 
 #include "task_priority_kinematic_control/core/stpik_check_io.hpp"
+#include "sura_manipulation_actions/msg/facing_reference.hpp"
 
 #include "task_priority_kinematic_control/core/pose_task_io.hpp"
 #include "task_priority_kinematic_control/core/cartesian_execution_io.hpp"
@@ -174,6 +175,9 @@ private:
   std::map<std::string, rclcpp::Subscription<PoseStamped>::SharedPtr> task_target_subs_;
   std::map<std::string, rclcpp::Subscription<Float64MultiArray>::SharedPtr> task_joint_target_subs_;
   std::map<std::string, rclcpp::Subscription<msg::FacingTarget>::SharedPtr> task_facing_target_subs_;
+  std::map<std::string,
+    rclcpp::Subscription<sura_manipulation_actions::msg::FacingReference>::SharedPtr>
+    task_facing_reference_subs_;
   std::map<std::string, rclcpp::Subscription<JointTrajectory>::SharedPtr> task_joint_trajectory_subs_;
   std::map<std::string, rclcpp_action::Server<FollowJointTrajectory>::SharedPtr>
     task_joint_trajectory_action_servers_;

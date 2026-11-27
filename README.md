@@ -479,7 +479,17 @@ La jerarquía de la configuración dual es: `joint_limits` (0),
 `right_pose` (4), `left_pose` (5), `base_pose` (6), `left_joint_trajectory` (7),
 `right_joint_trajectory` (8), `bimanual_joint_trajectory` (9),
 `left_arm_nominal` (10), `right_arm_nominal` (11), `EndEffectors_Relative_pose`
-(12), `ee_plan_relative_pose` (13) y `base_yaw` (14).
+(12), `ee_plan_relative_pose` (13), `base_yaw` (14), `EndEffectors_Facing` (23),
+manipulabilidad (24, 25) y `robot_nominal` (26), secundaria del backend de facing.
+
+`RobotNominalReference.activation` (opcional, 6 filas de base más las
+articulaciones) anula filas mientras la referencia está viva; con la base anulada
+las tareas de mantenimiento de la base no se reapuntan.
+
+`EndEffectorsFacingTask` acepta además `sura_manipulation_actions/msg/FacingReference`
+en `<prefijo de tareas>/<id>/facing_reference`: ejes de referencia unitarios, roll,
+distancia y sus derivadas como feedforward, que caduca tras `feedforward_timeout`
+(0.5 s). `facing_target` sigue funcionando y devuelve la referencia a los ejes puros.
 
 ### `JointNominalTask`
 

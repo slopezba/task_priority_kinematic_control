@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cmath>
 #include <limits>
 
@@ -329,6 +330,103 @@ TEST(EndEffectorsFacingTask, ActivationSelectsRows)
   ASSERT_TRUE(out.active);
   EXPECT_EQ(out.error.size(), 5);
   EXPECT_NEAR(out.error(4), -0.05, 1e-9);
+}
+
+namespace
+{
+sura_manipulation_actions::msg::FacingReference reference_msg(double distance)
+{
+  sura_manipulation_actions::msg::FacingReference out;
+  out.left_goal_axis.z = out.right_goal_axis.z = 1.0;
+  out.left_pointing_axis.z = out.right_pointing_axis.z = 1.0;
+  out.distance = distance;
+  return out;
+}
+}  // namespace
+
+TEST(EndEffectorsFacingTask, StreamedReferenceAcceptsNonPureAxesAndKeepsGoalRollZero)
+{
+  auto task = make_task({0.0}, {0.25});
+  auto message = reference_msg(0.25);
+  // Reference tilted 0.1 rad about +x of the left EE.
+  message.left_pointing_axis.y = -std::sin(0.1);
+  message.left_pointing_axis.z = std::cos(0.1);
+  std::string error;
+  ASSERT_TRUE(task.set_facing_reference(message, error)) << error;
+  WholeBodyState state;
+  const auto out = task.update(state, facing_backend(0.25));
+  ASSERT_TRUE(out.active);
+  EXPECT_NEAR(out.error.head<2>().norm(), 0.1, 1e-9);
+  EXPECT_NEAR(out.error(4), 0.0, 1e-9);
+  EXPECT_NEAR(out.error.segment<2>(2).norm(), 0.0, 1e-9);
+  // Measured-target capture returns to the goal axes.
+  task.capture_measured_target(facing_backend(0.25));
+  EXPECT_LT(task.update(state, facing_backend(0.25)).error.norm(), 1e-9);
+}
+
+TEST(EndEffectorsFacingTask, FeedforwardAddsToTheCommandAndExpires)
+{
+  auto now = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
+  EndEffectorsFacingTask task;
+  TaskContext context{model()};
+  context.steady_now = [now]() {return *now;};
+  task.configure("EndEffectors_Facing", "task_priority_kinematic_control/EndEffectorsFacingTask",
+    parameters({0.0}, {0.25}), context);
+  auto message = reference_msg(0.3);
+  message.distance_rate = 0.02;
+  message.roll_rate = -0.03;
+  std::string error;
+  ASSERT_TRUE(task.set_facing_reference(message, error)) << error;
+  WholeBodyState state;
+  auto out = task.update(state, facing_backend(0.25));
+  EXPECT_NEAR(out.desired_velocity(5), 0.02 + 0.05, 1e-9);
+  EXPECT_NEAR(out.desired_velocity(4), -0.03, 1e-9);
+  EXPECT_NEAR(out.feedforward(5), 0.02, 1e-9);
+  *now += std::chrono::seconds(1);
+  out = task.update(state, facing_backend(0.25));
+  EXPECT_NEAR(out.desired_velocity(5), 0.05, 1e-9);
+  EXPECT_NEAR(out.feedforward.norm(), 0.0, 1e-12);
+}
+
+TEST(EndEffectorsFacingTask, HostDeclaredZeroTimeoutAndEmptyGainSelectTheDefaults)
+{
+  // The controller and the runtime declare these values for every configured task.
+  auto params = parameters({0.0}, {0.25});
+  params["feedforward_timeout"] = rclcpp::Parameter("feedforward_timeout", 0.0);
+  auto now = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
+  TaskContext context{model()};
+  context.steady_now = [now]() {return *now;};
+  EndEffectorsFacingTask task;
+  ASSERT_NO_THROW(task.configure(
+    "EndEffectors_Facing", "task_priority_kinematic_control/EndEffectorsFacingTask", params, context));
+  auto message = reference_msg(0.25);
+  message.distance_rate = 0.02;
+  std::string error;
+  ASSERT_TRUE(task.set_facing_reference(message, error)) << error;
+  WholeBodyState state;
+  *now += std::chrono::milliseconds(400);
+  EXPECT_NEAR(task.update(state, facing_backend(0.25)).feedforward(5), 0.02, 1e-9);
+  *now += std::chrono::milliseconds(200);
+  EXPECT_NEAR(task.update(state, facing_backend(0.25)).feedforward(5), 0.0, 1e-12);
+  params["feedforward_timeout"] = rclcpp::Parameter("feedforward_timeout", -1.0);
+  EXPECT_THROW(task.configure("limits", "plugin", params, context), std::invalid_argument);
+}
+
+TEST(EndEffectorsFacingTask, RejectsInvalidReferences)
+{
+  auto task = make_task();
+  std::string error;
+  auto message = reference_msg(0.0);
+  EXPECT_FALSE(task.set_facing_reference(message, error));
+  message = reference_msg(0.25);
+  message.left_pointing_axis.x = 1.0;
+  EXPECT_FALSE(task.set_facing_reference(message, error));
+  message = reference_msg(0.25);
+  message.left_goal_axis.x = 1.0;
+  EXPECT_FALSE(task.set_facing_reference(message, error));
+  message = reference_msg(0.25);
+  message.roll_rate = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(task.set_facing_reference(message, error));
 }
 
 }  // namespace task_priority_kinematic_control

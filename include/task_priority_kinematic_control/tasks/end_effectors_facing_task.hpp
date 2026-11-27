@@ -1,7 +1,11 @@
 #pragma once
 
+#include "sura_manipulation_actions/facing_geometry.hpp"
+#include "sura_manipulation_actions/msg/facing_reference.hpp"
 #include "task_priority_kinematic_control/msg/facing_target.hpp"
 #include "task_priority_kinematic_control/tasks/task_base.hpp"
+
+#include <chrono>
 
 namespace task_priority_kinematic_control
 {
@@ -15,8 +19,10 @@ namespace task_priority_kinematic_control
 //   5    distance between both EE tracks distance
 // where d = (p_right - p_left) / ||p_right - p_left||.
 //
-// Pointing axes must be pure signed axes (+-x, +-y, +-z). The zero of the roll uses a cyclic
-// reference axis per EE: +-x -> +-y, +-y -> +-z, +-z -> +-x (same sign as the pointing axis).
+// Goal pointing axes must be pure signed axes (+-x, +-y, +-z); a streamed FacingReference may
+// move the pointing reference through any unit vector and adds an expiring feedforward.
+// The geometry is shared with the bimanual planner (facing_geometry.hpp).
+// The zero of the roll uses a cyclic reference axis per goal axis: +-x -> +-y, +-y -> +-z, +-z -> +-x (same sign as the pointing axis).
 // The roll is the signed angle around d from the left reference axis to the right one, both
 // projected onto the plane orthogonal to d.
 class EndEffectorsFacingTask : public TaskBaseCommon
@@ -35,7 +41,14 @@ public:
     const KinematicsBackend & backend) override;
 
   bool set_facing_target(const msg::FacingTarget & target, std::string & message);
+  bool set_facing_reference(
+    const sura_manipulation_actions::msg::FacingReference & reference, std::string & message);
   bool set_gain(const std::vector<double> & gain, std::string & message) override;
+  bool set_enabled(bool enabled) override;
+  void reset() override;
+  const std::string & left_frame() const {return left_frame_;}
+  const std::string & right_frame() const {return right_frame_;}
+  double min_distance() const {return min_distance_;}
   msg::TaskStatus build_status() const override;
   std::vector<double> current_target() const override;
   // Keeps the pointing axes and captures the measured roll and distance as the new target.
@@ -55,14 +68,19 @@ public:
     const Eigen::Vector3d & axis, int & index, double & sign, std::string & message);
 
 private:
+  void restore_goal_reference();
+  sura_manipulation_actions::facing::Reference reference() const;
+
   std::string left_frame_;
   std::string right_frame_;
-  Eigen::Vector3d left_pointing_axis_ = Eigen::Vector3d::UnitZ();
-  Eigen::Vector3d right_pointing_axis_ = Eigen::Vector3d::UnitZ();
-  int left_axis_index_ = 2;
-  int right_axis_index_ = 2;
-  double left_axis_sign_ = 1.0;
-  double right_axis_sign_ = 1.0;
+  sura_manipulation_actions::facing::PureAxis left_goal_;
+  sura_manipulation_actions::facing::PureAxis right_goal_;
+  // Current pointing reference, equal to the goal axes unless a reference is streamed.
+  Eigen::Vector3d left_reference_axis_ = Eigen::Vector3d::UnitZ();
+  Eigen::Vector3d right_reference_axis_ = Eigen::Vector3d::UnitZ();
+  Eigen::Matrix<double, 6, 1> feedforward_ = Eigen::Matrix<double, 6, 1>::Zero();
+  std::chrono::steady_clock::time_point feedforward_time_;
+  double feedforward_timeout_ = 0.5;
   double target_roll_ = 0.0;
   double target_distance_ = 0.0;
   bool capture_roll_pending_ = true;

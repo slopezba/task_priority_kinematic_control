@@ -159,6 +159,26 @@ bool TaskManager::set_task_joint_target(
   return false;
 }
 
+bool TaskManager::set_task_facing_reference(
+  const std::string & task_id,
+  const sura_manipulation_actions::msg::FacingReference & reference,
+  std::string & message)
+{
+  if (!allow_mutation(task_id, message)) {return false;}
+  for (auto & task : tasks_) {
+    if (task->id() == task_id) {
+      auto facing = std::dynamic_pointer_cast<EndEffectorsFacingTask>(task);
+      if (!facing) {
+        message = "Task is not an EndEffectorsFacingTask";
+        return false;
+      }
+      return facing->set_facing_reference(reference, message);
+    }
+  }
+  message = "Task not found";
+  return false;
+}
+
 bool TaskManager::set_task_facing_target(
   const std::string & task_id,
   const msg::FacingTarget & target,

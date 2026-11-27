@@ -2,6 +2,8 @@
 #include "task_priority_kinematic_control/core/posture_scene.hpp"
 #include "task_priority_kinematic_control/tasks/pose_task_common.hpp"
 #include "task_priority_kinematic_control/tasks/robot_nominal_task.hpp"
+#include "task_priority_kinematic_control/tasks/end_effectors_facing_task.hpp"
+#include "sura_manipulation_actions/facing_messages.hpp"
 #include "sura_manipulation_actions/cartesian_pose_path.hpp"
 #include "sura_manipulation_actions/whole_body_nominal.hpp"
 
@@ -25,6 +27,7 @@ using V = Eigen::VectorXd;
 using M = Eigen::MatrixXd;
 using Vector6 = Eigen::Matrix<double, 6, 1>;
 using Triplet = Eigen::Triplet<double>;
+namespace facing = sura_manipulation_actions::facing;
 constexpr double kInfinity = 1e20;
 constexpr double kTiltScale = 0.1;
 constexpr double kSoftScale = 0.01;
@@ -174,7 +177,6 @@ public:
     deadline_(std::chrono::steady_clock::now() +
       std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(options.budget)))
   {
-    free_start_ = free_start;
     if (!start.unavailable_reason.empty() || !start.model || !start.backend) {
       throw std::runtime_error("Nominal planning snapshot unavailable: " + start.unavailable_reason);
     }
@@ -205,13 +207,37 @@ public:
     scale_.head<3>().setConstant(0.1);
     scale_.segment<3>(3).setConstant(0.2);
     std::string reason;
-    if (goal.trajectory.header.frame_id != model.world_frame() || !path_.initTimed(goal.trajectory, reason)) {
-      throw std::runtime_error("Invalid nominal tool path: " + (reason.empty() ? "frame mismatch" : reason));
+    facing_ = !goal.facing_path.points.empty();
+    double duration = 0.0;
+    if (facing_) {
+      if (!facing::fromMessage(goal.facing_path, left_goal_, right_goal_, facing_path_, reason)) {
+        throw std::runtime_error("Invalid facing path: " + reason);
+      }
+      if (!std::isfinite(goal.facing_duration) || goal.facing_duration <= 0.0) {
+        throw std::runtime_error("Facing nominal planning needs a positive facing_duration");
+      }
+      if (!goal.nominal_activation.empty() &&
+        goal.nominal_activation.size() != static_cast<size_t>(n_))
+      {throw std::runtime_error("nominal_activation needs 6 base rows plus every joint");}
+      // Base rows off in the robot_nominal mask: the base is held, not planned.
+      base_locked_ = !goal.nominal_activation.empty() &&
+        std::none_of(goal.nominal_activation.begin(), goal.nominal_activation.begin() + 6,
+        [](bool value) {return value;});
+      for (int i = 0; i < 6; ++i) {band_(i) = std::max(1e-4, 0.25 * goal.path_tolerance[static_cast<size_t>(i)]);}
+      duration = goal.facing_duration;
+      free_start = false;
+    } else {
+      if (goal.trajectory.header.frame_id != model.world_frame() || !path_.initTimed(goal.trajectory, reason)) {
+        throw std::runtime_error("Invalid nominal tool path: " + (reason.empty() ? "frame mismatch" : reason));
+      }
+      const double lin = *std::min_element(goal.path_tolerance.begin(), goal.path_tolerance.begin() + 3);
+      const double ang = *std::min_element(goal.path_tolerance.begin() + 3, goal.path_tolerance.end());
+      band_ << Eigen::Vector3d::Constant(std::max(1e-4, 0.25 * lin)), Eigen::Vector3d::Constant(std::max(1e-4, 0.25 * ang));
+      duration = path_.duration();
     }
-    const double lin = *std::min_element(goal.path_tolerance.begin(), goal.path_tolerance.begin() + 3);
-    const double ang = *std::min_element(goal.path_tolerance.begin() + 3, goal.path_tolerance.end());
-    band_ << Eigen::Vector3d::Constant(std::max(1e-4, 0.25 * lin)), Eigen::Vector3d::Constant(std::max(1e-4, 0.25 * ang));
-    const double duration = std::max(path_.duration(), 0.2);
+    duration_ = duration;
+    free_start_ = free_start;
+    duration = std::max(duration, 0.2);
     const int count = std::clamp(static_cast<int>(std::ceil(duration / options.knot_dt)), 2,
       std::max(2, static_cast<int>(options.max_knots)));
     for (int k = 0; k <= count; ++k) {times_.push_back(duration * k / count);}
@@ -259,6 +285,14 @@ public:
     std::string seed_method;
     if (warm && !warm->knots.empty()) {
       seed = from_warm(*warm); seed_method = "warm_start";
+    } else if (facing_) {
+      // Successive projection onto the facing path from the measured posture; the SQP
+      // and the layered search improve it with the whole hierarchy.
+      report("Nominal: facing path projection seed");
+      seed_method = "facing_projection";
+      seed.assign(times_.size(), V());
+      seed[0] = current_;
+      if (!repair(seed)) {seed.clear();}
     } else if (options_.rollout_seed) {
       report("Nominal: STPIK rollout seed");
       seed_method = "stpik_rollout";
@@ -314,6 +348,13 @@ private:
       if (std::dynamic_pointer_cast<RobotNominalTask>(probe.tasks[i])) {nominal_ = static_cast<int>(i);}
     }
     if (selected_ < 0) {throw std::runtime_error("Selected tool task is unavailable: " + goal_.task_id);}
+    if (facing_) {
+      const auto task = std::dynamic_pointer_cast<EndEffectorsFacingTask>(probe.tasks[static_cast<size_t>(selected_)]);
+      if (!task) {throw std::runtime_error("Facing planning needs an EndEffectorsFacingTask: " + goal_.task_id);}
+      left_frame_ = task->left_frame();
+      right_frame_ = task->right_frame();
+      min_distance_ = task->min_distance();
+    }
     if (nominal_ < 0) {throw std::runtime_error("No RobotNominalTask (robot_nominal) is configured");}
     const auto robot = std::dynamic_pointer_cast<RobotNominalTask>(probe.tasks[static_cast<size_t>(nominal_)]);
     if (!robot->enabled()) {throw std::runtime_error("robot_nominal task is disabled");}
@@ -354,6 +395,34 @@ private:
     j.middleCols(3, 3) = j.middleCols(3, 3) * spatial(x.segment<3>(3));
     return j;
   }
+  // Geometric progress at a knot time: the timed tool path, or the facing rest-to-rest profile.
+  double progress_at(double time) const
+  {
+    return facing_ ? facing::restToRestProgress(time, duration_) : path_.timedProgress(time);
+  }
+  // Primary task error (desired - measured) and Jacobian in coordinates. False when the facing
+  // geometry is undefined (tools too close or roll undefined).
+  bool primary(const WholeBodyState & s, const V & x, double time, StpikSnapshot & probe,
+    Vector6 & error, M & jacobian) const
+  {
+    if (!facing_) {
+      const auto frame = pose_math::compute_tip_state(*probe.backend, s, goal_.tip_frame,
+        probe.tasks[static_cast<size_t>(selected_)].get());
+      jacobian = to_coordinates(frame.jacobian, x);
+      error = tip_error(path_.sample(time), frame.pose);
+      return true;
+    }
+    const auto left = probe.backend->get_frame_state(left_frame_);
+    const auto right = probe.backend->get_frame_state(right_frame_);
+    const auto rows = facing::evaluate(left.pose, right.pose, left.jacobian, right.jacobian,
+      left_goal_, right_goal_, facing_path_.sample(progress_at(time)), min_distance_);
+    error = rows.error;
+    jacobian = rows.jacobian.size() ? to_coordinates(rows.jacobian, x) : M::Zero(6, n_);
+    lock_base(jacobian);
+    return rows.valid && rows.roll_valid;
+  }
+  // With a held base the base columns cannot contribute.
+  void lock_base(M & j) const {if (base_locked_ && j.cols() == n_) {j.leftCols(6).setZero();}}
   Vector6 tip_error(const Eigen::Isometry3d & desired, const Eigen::Isometry3d & measured) const
   {
     Vector6 e;
@@ -436,12 +505,12 @@ private:
       if (k == 0 && !free_start_) {continue;}  // Fixed start: only initialize latches with it.
       const double w = dt_ / total_;
       const auto at = "t=" + std::to_string(times_[k]) + " s";
-      // Tool pose on the timed path.
-      const auto frame = pose_math::compute_tip_state(*probe.backend, s, goal_.tip_frame, probe.tasks[static_cast<size_t>(selected_)].get());
-      knot.tip_j = to_coordinates(frame.jacobian, x[k]);
-      knot.tip_e = tip_error(path_.sample(times_[k]), frame.pose);
+      // Primary task on its path (tool pose, or end-effectors facing).
+      if (!primary(s, x[k], times_[k], probe, knot.tip_e, knot.tip_j)) {
+        violate(1.0, "facing geometry undefined " + at);
+      }
       for (int i = 0; i < 6; ++i) {
-        violate((std::abs(knot.tip_e(i)) - band_(i)) / band_(i), "tool path " + at);
+        violate((std::abs(knot.tip_e(i)) - band_(i)) / band_(i), (facing_ ? "facing path " : "tool path ") + at);
         out.cost += 1e3 * w * std::pow(knot.tip_e(i) / band_(i), 2) * (std::abs(knot.tip_e(i)) > band_(i));
       }
       // Higher tasks.
@@ -514,7 +583,7 @@ private:
           posture_.collision_buffer, 2);
         if (gradients) {
           knot.clearance_gradient = V::Zero(n_);
-          for (int c = 0; c < n_; ++c) {
+          for (int c = base_locked_ ? 6 : 0; c < n_; ++c) {
             V perturbed = x[k];
             perturbed(c) += 1e-4;
             knot.clearance_gradient(c) = (distance(state(perturbed)) - knot.clearance) / 1e-4;
@@ -726,6 +795,7 @@ private:
     trust.head<3>().setConstant(options_.trust_position);
     trust.segment<3>(3).setConstant(options_.trust_angle);
     trust.tail(joints_).setConstant(options_.trust_joint);
+    if (base_locked_) {trust.head<6>().setZero();}
     constexpr double mu = 100.0;
     auto current = evaluate(x, true);
     const double initial_prevention = current.prevention;
@@ -781,15 +851,14 @@ private:
   // Global fallback: layered self-motion samples + dynamic programming.
   bool project(V & x, double time, StpikSnapshot & probe) const
   {
-    const auto desired = path_.sample(time);
     for (int iteration = 0; iteration < 40; ++iteration) {
       const auto s = state(x);
       probe.backend->update(s);
-      const auto frame = pose_math::compute_tip_state(*probe.backend, s, goal_.tip_frame, probe.tasks[static_cast<size_t>(selected_)].get());
       std::vector<Eigen::RowVectorXd> rows;
       std::vector<double> errors;
-      const Vector6 tip = tip_error(desired, frame.pose);
-      const M tip_j = to_coordinates(frame.jacobian, x);
+      Vector6 tip;
+      M tip_j;
+      if (!primary(s, x, time, probe, tip, tip_j)) {return false;}
       bool converged = true;
       for (int i = 0; i < 6; ++i) {
         rows.push_back(tip_j.row(i)); errors.push_back(tip(i));
@@ -802,7 +871,8 @@ private:
         PostureRegion region;
         if (StpikTaskAccess::posture_region(task, region) || !computation.active ||
           computation.structural_zero_rows || computation.jacobian.rows() == 0) {continue;}
-        const M j = to_coordinates(computation.jacobian, x);
+        M j = to_coordinates(computation.jacobian, x);
+        lock_base(j);
         for (Eigen::Index r = 0; r < j.rows(); ++r) {
           if (j.row(r).isZero(1e-12)) {continue;}
           const double error = computation.error(r);
@@ -826,6 +896,7 @@ private:
       V delta = scale_.asDiagonal() * (js.transpose() * gram.ldlt().solve(e));
       const double ratio = (delta.cwiseQuotient(scale_)).cwiseAbs().maxCoeff();
       if (ratio > 0.5) {delta *= 0.5 / ratio;}
+      if (base_locked_) {delta.head<6>().setZero();}
       x += delta;
       x.tail(joints_) = x.tail(joints_).cwiseMax(lower_).cwiseMin(upper_);
       x.segment<2>(3) = x.segment<2>(3).cwiseMax(tilt_lower_).cwiseMin(tilt_upper_);
@@ -920,8 +991,10 @@ private:
         V x = references[static_cast<size_t>(i) % references.size()];
         if (i >= static_cast<int>(references.size())) {
           // Random self-motion around the reference: base position/yaw and joints.
-          for (int c = 0; c < 3; ++c) {x(c) += 0.25 * unit(random);}
-          x(5) += 0.4 * unit(random);
+          if (!base_locked_) {
+            for (int c = 0; c < 3; ++c) {x(c) += 0.25 * unit(random);}
+            x(5) += 0.4 * unit(random);
+          }
           for (int j = 0; j < joints_; ++j) {x(6 + j) += 0.8 * unit(random);}
           x.tail(joints_) = x.tail(joints_).cwiseMax(lower_).cwiseMin(upper_);
         }
@@ -976,6 +1049,7 @@ private:
     if (expired()) {failure += failure.empty() ? "budget exhausted" : "; budget exhausted"; return std::nullopt;}
     NominalPlan plan;
     plan.times = times_;
+    for (double time : times_) {plan.progress.push_back(progress_at(time));}
     plan.knots = x;
     plan.method = method;
     std::vector<sura_manipulation_actions::BaseCoordinates> base;
@@ -1039,6 +1113,13 @@ private:
   PostureScene scene_;
   std::chrono::steady_clock::time_point deadline_;
   sura_manipulation_actions::CartesianPosePath path_;
+  bool facing_ = false;
+  bool base_locked_ = false;
+  facing::Path facing_path_;
+  facing::PureAxis left_goal_, right_goal_;
+  std::string left_frame_, right_frame_;
+  double min_distance_ = 0.02;
+  double duration_ = 0.0;
   bool free_start_ = false;
   bool start_rejected_ = false;
   int joints_ = 0, n_ = 0, selected_ = -1, nominal_ = -1;
@@ -1073,8 +1154,57 @@ bool NominalOptions::valid(std::string & reason) const
   return true;
 }
 
+namespace
+{
+// Facing is planned before its tasks are enabled (enabling them moves the arms), so the
+// planner simulates the execution hierarchy on private copies of the controller tasks.
+StpikSnapshot facing_hierarchy(const StpikSnapshot & start, const Preparation::Goal & goal)
+{
+  if (!start.unavailable_reason.empty()) {return start;}
+  auto out = StpikTaskAccess::capture(start.initial_state, start.model, start.backend, start.solver, start.tasks);
+  if (!out.unavailable_reason.empty()) {return out;}
+  out.captured = start.captured;
+  std::shared_ptr<TaskBase> primary, nominal;
+  for (const auto & task : out.tasks) {
+    const auto & disabled = goal.facing_disabled_tasks;
+    if (std::find(disabled.begin(), disabled.end(), task->id()) != disabled.end()) {task->set_enabled(false);}
+    if (task->id() == goal.task_id) {primary = task;}
+    if (std::dynamic_pointer_cast<RobotNominalTask>(task)) {nominal = task;}
+  }
+  // A missing or mistyped task is reported by the planner.
+  if (!std::dynamic_pointer_cast<EndEffectorsFacingTask>(primary) || !nominal) {return out;}
+  primary->set_enabled(true);
+  nominal->set_enabled(true);
+  const auto position = [&out](const std::shared_ptr<TaskBase> & task) {
+      return std::find(out.tasks.begin(), out.tasks.end(), task);
+    };
+  if (position(nominal) < position(primary) || nominal->priority() <= primary->priority()) {
+    out.tasks.erase(position(nominal));
+    out.tasks.insert(position(primary) + 1, nominal);
+    nominal->set_priority(primary->priority() + 1);
+  }
+  return out;
+}
+}  // namespace
+
 StpikAction::Goal nominal_tracking_goal(const Preparation::Goal & goal, const NominalPlan & plan)
 {
+  if (!goal.facing_path.points.empty()) {
+    // Facing check: the same references the facing executor streams.
+    StpikAction::Goal out;
+    out.trajectory.header.frame_id = plan.base.header.frame_id;
+    out.task_id = goal.task_id;
+    out.facing_path = goal.facing_path;
+    out.nominal_joints = plan.joints;
+    out.nominal_base = plan.base;
+    out.nominal_progress = plan.progress;
+    out.nominal_activation = goal.nominal_activation;
+    out.tolerance_orientation.w = 1.0;
+    out.path_tolerance = goal.path_tolerance;
+    out.goal_tolerance = goal.goal_tolerance;
+    out.goal_time_tolerance = goal.goal_time_tolerance;
+    return out;
+  }
   auto out = posture_tracking_goal(goal);
   out.nominal_joints = plan.joints;
   out.nominal_base = plan.base;
@@ -1089,7 +1219,11 @@ NominalPlan optimize_nominal_trajectory(
 {
   std::string reason;
   if (!options.valid(reason)) {throw std::runtime_error(reason);}
-  Planner planner(start, goal, simulation, posture, options, canceled, feedback, free_start && !warm);
+  const bool facing = !goal.facing_path.points.empty();
+  // The planner keeps a reference to its start snapshot.
+  const StpikSnapshot prepared = facing ? facing_hierarchy(start, goal) : start;
+  Planner planner(prepared, goal, simulation, posture, options, canceled, feedback,
+    free_start && !warm && !facing);
   return planner.plan(warm);
 }
 }  // namespace task_priority_kinematic_control

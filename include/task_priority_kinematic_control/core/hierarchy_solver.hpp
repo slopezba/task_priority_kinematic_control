@@ -29,8 +29,18 @@ public:
     std::vector<double> minimum_singular_values;
     std::vector<bool> rank_deficient;
   };
+  // Capture the exact strict projector of the existing traversal before this task.
+  // Velocities are physical. Columns of basis are orthonormal after division by scales.
+  struct Prefix
+  {
+    size_t before_task = 0;
+    Eigen::VectorXd scales, particular;
+    Eigen::MatrixXd basis;
+    size_t rank = 0;
+  };
   WholeBodyCommand solve(const std::vector<TaskComputation> & tasks,
-    Diagnostic * diagnostic = nullptr, double singular_value_tolerance = 1e-6) const;
+    Diagnostic * diagnostic = nullptr, double singular_value_tolerance = 1e-6,
+    Prefix * prefix = nullptr) const;
   SolverMethod method() const {return method_;}
   const Eigen::VectorXd & velocity_limits() const {return velocity_limits_;}
   std::string configuration_key() const;

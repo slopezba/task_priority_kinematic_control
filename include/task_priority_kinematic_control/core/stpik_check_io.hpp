@@ -1,6 +1,7 @@
 #pragma once
 
 #include "task_priority_kinematic_control/core/stpik_check.hpp"
+#include "sura_manipulation_actions/srv/check_facing_execution.hpp"
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <atomic>
 #include <future>
@@ -15,7 +16,7 @@ class StpikCheckIO
 {
 public:
   using Handle = rclcpp_action::ServerGoalHandle<StpikAction>;
-  using Capture = std::function<StpikSnapshot()>;
+  using Capture = std::function<StpikSnapshot(const std::string &)>;
   using Validate = std::function<bool(const StpikSnapshot &, const StpikOptions &, std::string &)>;
   ~StpikCheckIO()
   {
@@ -33,6 +34,7 @@ public:
     scalar("stpik.numerical_tolerance", 1e-6); scalar("stpik.singular_value_tolerance", 1e-6);
     scalar("stpik.wall_timeout", 30.0); scalar("stpik.snapshot_joint_tolerance", 0.001);
     scalar("stpik.snapshot_position_tolerance", 0.005); scalar("stpik.snapshot_orientation_tolerance", 0.01);
+    scalar("stpik.rejoin_position_tolerance", 0.005); scalar("stpik.rejoin_orientation_tolerance", 0.01);
     const auto array = [node](const std::string & name, const std::vector<double> & value) {
       if (!node->has_parameter(name)) {node->template declare_parameter<std::vector<double>>(name, value);}
     };
@@ -53,6 +55,8 @@ public:
     out.snapshot_joint_tolerance = node->get_parameter("stpik.snapshot_joint_tolerance").as_double();
     out.snapshot_position_tolerance = node->get_parameter("stpik.snapshot_position_tolerance").as_double();
     out.snapshot_orientation_tolerance = node->get_parameter("stpik.snapshot_orientation_tolerance").as_double();
+    out.rejoin_position_tolerance = node->get_parameter("stpik.rejoin_position_tolerance").as_double();
+    out.rejoin_orientation_tolerance = node->get_parameter("stpik.rejoin_orientation_tolerance").as_double();
     out.velocity_limits = node->get_parameter("stpik.velocity_limits").as_double_array();
     std::string error;
     if (!out.valid(error)) {throw std::invalid_argument(error);}
@@ -88,25 +92,43 @@ public:
     std::scoped_lock lock(mutex_); validated_snapshot_.reset(); validated_id_ = 0;
   }
 
+  using FacingReadiness = sura_manipulation_actions::srv::CheckFacingExecution;
+  // Read-only hierarchy check used by the bimanual planner before a facing execution.
+  static bool facing_ready(
+    const std::vector<std::shared_ptr<TaskBase>> & tasks,
+    const FacingReadiness::Request & request, std::string & message);
+
   template<class NodeT>
   void configure_host(NodeT * node, std::mutex & mutex, WholeBodyState & state,
     std::shared_ptr<WholeBodyModel> & model, KinematicsBackendPtr & backend,
     HierarchySolver & solver, std::unique_ptr<TaskManager> & manager,
     std::function<bool()> ready)
   {
-    configure(node, [&mutex, &state, &model, &backend, &solver, &manager, ready]() {
+    configure(node, [&mutex, &state, &model, &backend, &solver, &manager, ready](const std::string & streamed_pose) {
         std::scoped_lock lock(mutex);
         if (!ready() || !manager || !backend || !model) {
           StpikSnapshot unavailable;
           unavailable.unavailable_reason = "Controller is inactive, busy, changing parameters or has stale state";
           return unavailable;
         }
-        return StpikTaskAccess::capture(state, model, backend, solver, manager->tasks());
+        return StpikTaskAccess::capture(state, model, backend, solver, manager->tasks(), streamed_pose);
       }, [&mutex, &state, &model, &backend, &solver, &manager, ready](
         const StpikSnapshot & snapshot, const StpikOptions & settings, std::string & reason) {
         std::scoped_lock lock(mutex);
         if (!ready() || !manager || !model) {reason = "Controller is no longer ready for Pose execution"; return false;}
         return StpikTaskAccess::compatible(snapshot, state, *model, backend.get(), solver, manager->tasks(), settings, reason);
+      });
+    facing_service_ = node->template create_service<FacingReadiness>(
+      "task_priority/check_facing_execution",
+      [&mutex, &manager, ready](
+        const std::shared_ptr<FacingReadiness::Request> request,
+        std::shared_ptr<FacingReadiness::Response> response) {
+        std::scoped_lock lock(mutex);
+        if (!ready() || !manager) {
+          response->message = "Controller is inactive, busy, changing parameters or has stale state";
+          return;
+        }
+        response->success = facing_ready(manager->tasks(), *request, response->message);
       });
   }
 
@@ -129,5 +151,6 @@ private:
   uint64_t next_id_ = 0, validated_id_ = 0;
   rclcpp_action::Server<StpikAction>::SharedPtr server_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::Service<FacingReadiness>::SharedPtr facing_service_;
 };
 }  // namespace task_priority_kinematic_control

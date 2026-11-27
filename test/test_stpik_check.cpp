@@ -9,9 +9,16 @@
 #include "task_priority_kinematic_control/tasks/self_collision_avoidance_task.hpp"
 #include "sura_manipulation_actions/cartesian_pose_path.hpp"
 #include <gtest/gtest.h>
+#include "task_priority_kinematic_control/core/local_prediction.hpp"
+#include "task_priority_kinematic_control/tasks/robot_nominal_task.hpp"
+#include "sura_manipulation_actions/whole_body_nominal.hpp"
+#include <cstdlib>
+#include <fstream>
 #include <algorithm>
 #include <iterator>
 #include <limits>
+#include "task_priority_kinematic_control/core/stpik_check_io.hpp"
+#include "task_priority_kinematic_control/tasks/end_effectors_facing_task.hpp"
 
 namespace task_priority_kinematic_control
 {
@@ -73,6 +80,68 @@ protected:
   }
   StpikSnapshot snapshot() {return StpikTaskAccess::capture(state, model, backend, solver, tasks);}
   StpikAction::Result run(const StpikAction::Goal & input) {return StpikCheck::run(snapshot(), input, options);}
+  StpikAction::Goal local_goal(bool moving)
+  {
+    auto request = goal(moving ? 0.05 : 0,0,2);
+    auto nominal = std::make_shared<RobotNominalTask>();
+    nominal->configure("robot_nominal","RobotNominalTask",{
+      {"gain",rclcpp::Parameter("gain",std::vector<double>(8,0.0))}
+    },TaskContext{model,backend});
+    tasks.push_back(nominal);
+    auto & p = request.prediction;
+    p.robot_description = robot;
+    // The original checker fixture deliberately has a 1 mm/s URDF limit.
+    // Use a 1 m/s fixture for these paired trials, with identical caps in both arms.
+    const std::string slow = "velocity=\"0.001\"";
+    for (auto i=p.robot_description.find(slow); i!=std::string::npos; i=p.robot_description.find(slow)) {
+      p.robot_description.replace(i,slow.size(),"velocity=\"1\"");
+    }
+    p.robot_description_semantic = R"(<robot name="stpik_fixture"><virtual_joint
+      name="root" type="floating" parent_frame="world" child_link="base"/></robot>)";
+    p.scene.robot_model_name = "stpik_fixture";
+    p.scene.robot_state.joint_state.name = {"l","r"};
+    p.scene.robot_state.joint_state.position = {state.joint_positions(0),state.joint_positions(1)};
+    p.global_progress = {0,1};
+    p.start_progress = p.maximum_progress = moving ? 0.0 : 0.4;
+    p.progress_rate_scale = moving ? 1.0 : 0.0;
+    p.horizon = 0.2; p.budget = 10; p.improvement = 0;
+    p.recovery_threshold = 0.02; p.gain = 2.5;
+    options.dt = 0.025;
+    std::vector<sura_manipulation_actions::BaseCoordinates> base(2,sura_manipulation_actions::BaseCoordinates::Zero());
+    base.back()(2) = moving ? 0.05 : 0;
+    std::string reason;
+    EXPECT_TRUE(sura_manipulation_actions::buildWholeBodyNominal({0,2},base,
+      {Eigen::Vector2d::Zero(),Eigen::Vector2d::Zero()},model->all_joint_names(),"world",
+      request.nominal_joints,request.nominal_base,reason)) << reason;
+    return request;
+  }
+  std::pair<StpikAction::Result,StpikAction::Result> compare(StpikAction::Goal request)
+  {
+    const auto start = snapshot();
+    auto trial = [&](bool explore) {
+      request.prediction.explore = explore;
+      const auto report = predict_local_segment(start,request,options);
+      const auto name = ::testing::UnitTest::GetInstance()->current_test_info()->name();
+      std::cout << "LOCAL_TRIAL," << name << "," << explore << "," << report.code << ","
+                << report.configuration_error << "," << report.hierarchy_rank << ","
+                << report.candidates << "," << report.compute_seconds << std::endl;
+      if (const char * path = std::getenv("SURA_LOCAL_PLANNER_CSV")) {
+        std::ofstream csv(path,std::ios::app);
+        for (const auto & step : report.trace) {
+          csv << name << ',' << explore << ',' << report.code << ',' << report.compute_seconds << ','
+              << step.elapsed << ',' << step.progress << ',' << step.confirmed_progress << ','
+              << step.configuration_error << ',' << step.hierarchy_rank << ',' << step.clearance;
+          for (double e : step.cartesian_error) {csv << ',' << e;}
+          csv << ',';
+          for (const auto & id : step.active_constraints) {csv << id << ' ';}
+          csv << '\n';
+        }
+      }
+      return report;
+    };
+    auto baseline = trial(false);
+    return {baseline,trial(true)};
+  }
   void block_motion()
   {
     auto base = std::make_shared<FramePoseTask>();
@@ -106,6 +175,233 @@ protected:
   std::vector<std::shared_ptr<TaskBase>> tasks;
   StpikOptions options;
 };
+
+// Facing fixture: both tools on the world X axis; the left prismatic joint changes the distance.
+class FacingStpikTest : public StpikTest
+{
+protected:
+  void SetUp() override
+  {
+    StpikTest::SetUp();
+    facing = std::make_shared<EndEffectorsFacingTask>();
+    facing->configure("facing", "EndEffectorsFacingTask", {
+      {"enabled", rclcpp::Parameter("enabled", true)},
+      {"priority", rclcpp::Parameter("priority", 1.0)},
+      {"left_frame", rclcpp::Parameter("left_frame", "left")},
+      {"right_frame", rclcpp::Parameter("right_frame", "right")},
+      {"left_pointing_axis", rclcpp::Parameter("left_pointing_axis", std::vector<double>{1, 0, 0})},
+      {"right_pointing_axis", rclcpp::Parameter("right_pointing_axis", std::vector<double>{-1, 0, 0})},
+      {"gain", rclcpp::Parameter("gain", std::vector<double>(6, 2.0))}}, TaskContext{model, backend});
+    nominal = std::make_shared<RobotNominalTask>();
+    nominal->configure("robot_nominal", "RobotNominalTask", {
+      {"enabled", rclcpp::Parameter("enabled", true)},
+      {"priority", rclcpp::Parameter("priority", 2.0)},
+      {"gain", rclcpp::Parameter("gain", std::vector<double>(8, 1.0))}},
+      TaskContext{model, backend});
+    tasks = {facing, nominal};
+  }
+  StpikAction::Goal facing_goal()
+  {
+    StpikAction::Goal out;
+    out.trajectory.header.frame_id = "world";
+    out.task_id = "facing";
+    out.nominal_activation = {false, false, false, false, false, false, true, true};
+    out.nominal_base.header.frame_id = "world";
+    out.nominal_base.joint_names = {"floating_base"};
+    out.facing_path.left_goal_axis.x = 1.0;
+    out.facing_path.right_goal_axis.x = -1.0;
+    for (int i = 0; i <= 1; ++i) {
+      sura_manipulation_actions::msg::FacingPathPoint point;
+      point.progress = i;
+      point.left_pointing_axis.x = 1.0;
+      point.right_pointing_axis.x = -1.0;
+      point.roll_angle = std::acos(-1.0);
+      point.distance = 0.09 + 0.03 * i;
+      out.facing_path.points.push_back(point);
+      trajectory_msgs::msg::JointTrajectoryPoint joint;
+      joint.positions = {-0.03 * i, 0.0};
+      joint.time_from_start.sec = 2 * i;
+      out.nominal_joints.points.push_back(joint);
+      // A base pose far from the measured one: the mask must keep it from moving the base.
+      sura_manipulation_actions::BaseCoordinates base = sura_manipulation_actions::BaseCoordinates::Zero();
+      base(0) = 0.5;
+      out.nominal_base.points.push_back(sura_manipulation_actions::baseTrajectoryPoint(
+        base, sura_manipulation_actions::BaseCoordinates::Zero(),
+        sura_manipulation_actions::BaseCoordinates::Zero(), joint.time_from_start));
+    }
+    out.nominal_joints.joint_names = {"l", "r"};
+    out.nominal_progress = {0.0, 1.0};
+    out.path_tolerance = {0.05, 0.05, 0.05, 0.05, 0.05, 0.005};
+    out.goal_tolerance = {0.01, 0.01, 0.01, 0.01, 0.01, 0.001};
+    out.goal_time_tolerance = 1.0;
+    return out;
+  }
+  std::shared_ptr<EndEffectorsFacingTask> facing;
+  std::shared_ptr<RobotNominalTask> nominal;
+};
+
+TEST_F(FacingStpikTest, SimulatesTheFacingPathWithTheMaskedRobotNominal)
+{
+  const auto result = run(facing_goal());
+  EXPECT_EQ(result.outcome, StpikAction::Result::SUCCESS) << result.code << ": " << result.message;
+  ASSERT_EQ(result.joint_positions.size(), 2u);
+  EXPECT_NEAR(result.joint_positions[0], -0.03, 0.002);
+  EXPECT_NEAR(result.base_pose.position.x, 0.0, 1e-9);
+  // The live tasks are untouched by the isolated simulation.
+  EXPECT_FALSE(nominal->has_live_reference());
+}
+
+TEST_F(FacingStpikTest, RejectsUnreachableOrIncompleteHierarchies)
+{
+  auto request = facing_goal();
+  request.facing_path.points.back().roll_angle = std::acos(-1.0) - 0.5;
+  auto result = run(request);
+  EXPECT_EQ(result.outcome, StpikAction::Result::FAIL);
+  // The roll rows are unactuated here, so the report may name the singularity.
+  EXPECT_NE(result.code.find("TRACKING"), std::string::npos) << result.message;
+  request = facing_goal();
+  request.nominal_progress = {0.0};
+  EXPECT_EQ(run(request).code, "INVALID_TRAJECTORY");
+  nominal->set_enabled(false);
+  EXPECT_EQ(run(facing_goal()).code, "NOMINAL_TASK_UNAVAILABLE");
+}
+
+TEST_F(FacingStpikTest, ReadinessChecksEnabledTasksFramesAndPriorities)
+{
+  sura_manipulation_actions::srv::CheckFacingExecution::Request request;
+  request.facing_task = "facing"; request.nominal_task = "robot_nominal";
+  request.left_frame = "left"; request.right_frame = "right";
+  request.min_distance = 0.02;
+  request.disabled_tasks = {"left_pose"};
+  std::string message;
+  EXPECT_TRUE(StpikCheckIO::facing_ready(tasks, request, message)) << message;
+  auto with_pose = tasks;
+  with_pose.push_back(pose);
+  EXPECT_FALSE(StpikCheckIO::facing_ready(with_pose, request, message));
+  EXPECT_NE(message.find("left_pose"), std::string::npos);
+  nominal->set_priority(1);
+  EXPECT_FALSE(StpikCheckIO::facing_ready(tasks, request, message));
+  nominal->set_priority(2);
+  request.left_frame = "left_end";
+  EXPECT_FALSE(StpikCheckIO::facing_ready(tasks, request, message));
+}
+
+TEST_F(StpikTest, LocalFrozenNominalIsRetained)
+{
+  auto request = local_goal(false);
+  auto [nominal,local] = compare(request);
+  ASSERT_EQ(local.outcome,local.SUCCESS) << local.message;
+  ASSERT_EQ(nominal.outcome,nominal.SUCCESS) << nominal.message;
+  EXPECT_EQ(local.candidates,1u);
+  ASSERT_EQ(local.explored_paths.size(), 1u);
+  EXPECT_TRUE(local.explored_paths.front().rejoined);
+  EXPECT_EQ(local.explored_paths.front().poses.size(), 1u);
+  EXPECT_EQ(local.segment,nominal.segment);
+  for (const auto & point : local.trace) {EXPECT_DOUBLE_EQ(point.progress,0.4);}
+}
+
+TEST_F(StpikTest, LocalFrozenRecoveryWithIdenticalPerturbation)
+{
+  state.joint_positions(1) = 0.06;
+  auto request = local_goal(false);
+  request.prediction.weights = {1,1,8,0,0,0.001};
+  auto [nominal,local] = compare(request);
+  ASSERT_EQ(local.outcome,local.SUCCESS) << local.message;
+  ASSERT_EQ(nominal.outcome,nominal.SUCCESS) << nominal.message;
+  ASSERT_FALSE(nominal.trace.empty());
+  EXPECT_NEAR(nominal.configuration_error,nominal.trace.front().configuration_error,1e-6);
+  EXPECT_LT(local.configuration_error,nominal.configuration_error);
+  EXPECT_LT(local.segment_cost,local.continuation_cost);
+  EXPECT_GT(local.candidates,1u);
+  ASSERT_EQ(local.explored_paths.size(), local.candidates);
+  for (const auto & candidate : local.explored_paths) {
+    if (!candidate.poses.empty()) {
+      EXPECT_EQ(candidate.poses.front(), local.trace.front().tip_pose);
+    }
+  }
+  for (const auto & point : local.trace) {EXPECT_DOUBLE_EQ(point.progress,0.4);}
+  EXPECT_DOUBLE_EQ(state.joint_positions(1),0.06);
+}
+
+TEST_F(StpikTest, LocalFrozenReconnectsAndMaintainsTolerance)
+{
+  state.joint_positions(1) = 0.06;
+  auto request = local_goal(false);
+  request.prediction.weights = {1,1,8,0,0,0.001};
+  const auto disturbed = state;
+  for (bool explore : {false,true}) {
+    state = disturbed;
+    request.prediction.explore = explore;
+    size_t consecutive = 0;
+    for (int i = 0; i < 14; ++i) {
+      auto result = predict_local_segment(snapshot(),request,options);
+      ASSERT_EQ(result.outcome,result.SUCCESS) << result.message;
+      ASSERT_EQ(result.joint_positions.size(),2u);
+      state.joint_positions = Eigen::Map<const Eigen::Vector2d>(result.joint_positions.data());
+      const auto & base = result.base_pose;
+      state.base_position << base.position.x,base.position.y,base.position.z;
+      const auto & q = base.orientation;
+      state.base_rpy = Eigen::Quaterniond(q.w,q.x,q.y,q.z).toRotationMatrix().eulerAngles(2,1,0).reverse();
+      consecutive = result.configuration_error <= request.prediction.recovery_threshold ? consecutive+1 : 0;
+    }
+    if (explore) {EXPECT_GE(consecutive,2u);} else {EXPECT_EQ(consecutive,0u);}
+  }
+}
+
+TEST_F(StpikTest, LocalMovingPathChecksBothArms)
+{
+  auto request = local_goal(true);
+  auto [nominal,local] = compare(request);
+  ASSERT_EQ(local.outcome,local.SUCCESS) << local.message;
+  EXPECT_EQ(nominal.outcome,nominal.SUCCESS);
+  EXPECT_GT(local.segment.progress.back(),local.segment.progress.front());
+  ASSERT_GT(local.trace.size(), 1u);
+  const auto & start = request.trajectory.start_pose.position;
+  const auto & first = local.trace.front().tip_pose.position;
+  EXPECT_NEAR(first.x, start.x, 1e-9);
+  EXPECT_NEAR(first.y, start.y, 1e-9);
+  EXPECT_NEAR(first.z, start.z, 1e-9);
+  EXPECT_GT(local.trace.back().tip_pose.position.z, first.z);
+  EXPECT_EQ(local.segment.joints.joint_names,model->all_joint_names());
+}
+
+TEST_F(StpikTest, LocalVisualizationExtendsPastAcceptedSegment)
+{
+  auto request = local_goal(false);
+  request.prediction.explore = false;
+  state.base_position.z() = 0.015;
+  options.snapshot_position_tolerance = 0.05;
+  options.rejoin_position_tolerance = 0.004;
+  const auto result = predict_local_segment(snapshot(), request, options);
+  ASSERT_EQ(result.outcome, result.SUCCESS) << result.message;
+  ASSERT_FALSE(result.trace.empty());
+  ASSERT_EQ(result.explored_paths.size(), 1u);
+  const auto & explored = result.explored_paths.front();
+  ASSERT_TRUE(explored.rejoined);
+  ASSERT_GT(explored.poses.size(), result.trace.size());
+  EXPECT_EQ(explored.poses.front(), result.trace.front().tip_pose);
+  EXPECT_DOUBLE_EQ(result.trace.back().elapsed, request.prediction.horizon);
+  const double target_z = request.trajectory.start_pose.position.z;
+  EXPECT_GT(std::abs(result.trace.back().tip_pose.position.z - target_z),
+    options.rejoin_position_tolerance);
+  EXPECT_NEAR(explored.poses.back().position.z, target_z, options.rejoin_position_tolerance);
+}
+
+TEST_F(StpikTest, LocalActivatedRestrictionAndNoLocalSolution)
+{
+  collision(0.01);
+  auto request = local_goal(false);
+  state.joint_positions(0) = 0.02;
+  auto [baseline,limited] = compare(request);
+  ASSERT_EQ(limited.outcome,limited.SUCCESS) << limited.message;
+  EXPECT_NE(std::find(limited.active_constraints.begin(),limited.active_constraints.end(),"collision"),
+    limited.active_constraints.end());
+  state.joint_positions(0) = 0.06;
+  auto [nominal,local] = compare(request);
+  EXPECT_EQ(nominal.code,"NO_LOCAL_CONTINUATION");
+  EXPECT_EQ(local.code,"NO_LOCAL_CONTINUATION") << local.message;
+  EXPECT_TRUE(local.segment.progress.empty());
+}
 
 TEST(PostureCostTest, ProximityActivationAndZeroActivationDistance)
 {

@@ -6,6 +6,8 @@
 #include "task_priority_kinematic_control/tasks/frame_orientation_norm_limits_task.hpp"
 #include "task_priority_kinematic_control/tasks/joint_limits_task.hpp"
 #include "task_priority_kinematic_control/tasks/joint_nominal_task.hpp"
+#include "task_priority_kinematic_control/tasks/end_effectors_facing_task.hpp"
+#include "sura_manipulation_actions/facing_messages.hpp"
 #include "task_priority_kinematic_control/tasks/robot_nominal_task.hpp"
 #include "task_priority_kinematic_control/tasks/self_collision_avoidance_task.hpp"
 #include "task_priority_kinematic_control/tasks/stabilize_limits_task.hpp"
@@ -118,6 +120,51 @@ TEST_F(RobotNominalTest, ReferenceSynchronizesHolds)
   reference.joint_names = {"l"};
   reference.positions = {0.1};
   reference.velocities = {0.0};
+  EXPECT_FALSE(apply_robot_nominal_reference(tasks, *task, reference, message));
+}
+
+TEST_F(RobotNominalTest, MaskedBaseReferenceCommandsOnlyArmsAndKeepsTheBaseHold)
+{
+  auto base_hold = std::make_shared<FramePoseTask>();
+  base_hold->configure("base_pose", "FramePoseTask", {
+    {"frame_id", rclcpp::Parameter("frame_id", "base")}}, context);
+  base_hold->update(state, *backend);
+  base_hold->capture_measured_target(Eigen::Isometry3d::Identity());
+  auto arm_hold = std::make_shared<JointNominalTask>();
+  arm_hold->configure("left_arm_nominal", "JointNominalTask", {
+    {"joint_names", rclcpp::Parameter("joint_names", std::vector<std::string>{"l"})}}, context);
+  auto task = nominal_task({"base_pose", "left_arm_nominal"});
+  std::vector<std::shared_ptr<TaskBase>> tasks{base_hold, arm_hold, task};
+  const auto held = base_hold->current_target();
+  sura_manipulation_actions::msg::RobotNominalReference reference;
+  reference.header.frame_id = "world";
+  reference.base_pose.position.x = 0.3;
+  reference.base_pose.orientation.w = 1.0;
+  reference.joint_names = {"l", "r"};
+  reference.positions = {0.7, 0.2};
+  reference.velocities = {0.1, 0.0};
+  reference.activation = {false, false, false, false, false, false, true, true};
+  std::string message;
+  ASSERT_TRUE(apply_robot_nominal_reference(tasks, *task, reference, message)) << message;
+  EXPECT_TRUE(task->base_masked());
+  EXPECT_EQ(base_hold->current_target(), held);
+  EXPECT_NEAR(arm_hold->current_target().at(0), 0.7, 1e-12);
+  auto out = task->update(state, *backend);
+  ASSERT_TRUE(out.active);
+  ASSERT_EQ(out.jacobian.rows(), 2);
+  EXPECT_TRUE(out.jacobian.leftCols(6).isZero());
+  EXPECT_NEAR(out.error(0), 0.7, 1e-12);
+  EXPECT_NEAR(out.feedforward(0), 0.1, 1e-12);
+  // The mask only removes rows: roll and pitch stay disabled by the configuration.
+  reference.activation.assign(8, true);
+  ASSERT_TRUE(apply_robot_nominal_reference(tasks, *task, reference, message)) << message;
+  EXPECT_EQ(task->update(state, *backend).jacobian.rows(), 6);
+  EXPECT_NEAR(base_hold->current_target().at(0), 0.3, 1e-12);
+  // An empty mask is the previous behaviour; a wrong size is rejected.
+  reference.activation.clear();
+  ASSERT_TRUE(apply_robot_nominal_reference(tasks, *task, reference, message)) << message;
+  EXPECT_FALSE(task->base_masked());
+  reference.activation = {true, true};
   EXPECT_FALSE(apply_robot_nominal_reference(tasks, *task, reference, message));
 }
 
@@ -559,6 +606,82 @@ TEST_F(NominalPlannerTest, OrientationNormPreventionUsesAngularGradient)
   ASSERT_EQ(margins.size(), 1u);
   EXPECT_NEAR(margins[0].deficit, 0.5, 1e-9);
   EXPECT_NEAR(margins[0].gradient(5), 50.0, 1e-9);
+}
+
+// Facing between the two tools of the fixture: left +x points at the right tool, right -x
+// points back; the left prismatic joint changes the distance. The base is masked out.
+TEST_F(NominalPlannerTest, FacingNominalFollowsTheFacingPathWithTheBaseHeld)
+{
+  namespace facing = sura_manipulation_actions::facing;
+  auto facing_task = std::make_shared<EndEffectorsFacingTask>();
+  facing_task->configure("facing", "EndEffectorsFacingTask", {
+    {"priority", rclcpp::Parameter("priority", 5.0)},
+    {"left_frame", rclcpp::Parameter("left_frame", "left")},
+    {"right_frame", rclcpp::Parameter("right_frame", "right")},
+    {"left_pointing_axis", rclcpp::Parameter("left_pointing_axis", std::vector<double>{1, 0, 0})},
+    {"right_pointing_axis", rclcpp::Parameter("right_pointing_axis", std::vector<double>{-1, 0, 0})},
+    {"gain", rclcpp::Parameter("gain", std::vector<double>(6, 2.0))}}, context);
+  robot_nominal->set_priority(10);
+  tasks = {tasks[0], tasks[1], tasks[3], facing_task, robot_nominal};
+  facing::PureAxis left_goal, right_goal;
+  std::string reason;
+  ASSERT_TRUE(facing::pureAxis(Eigen::Vector3d::UnitX(), left_goal, reason));
+  ASSERT_TRUE(facing::pureAxis(-Eigen::Vector3d::UnitX(), right_goal, reason));
+  facing::Reference from, to;
+  ASSERT_TRUE(facing::endpoints(backend->get_frame_state("left").pose, backend->get_frame_state("right").pose,
+    left_goal, right_goal, std::numeric_limits<double>::quiet_NaN(), 0.06, 0.02, from, to, reason)) << reason;
+  auto goal = request(0.0, 1.0);
+  goal.task_id = "facing";
+  goal.facing_path = facing::toMessage(left_goal, right_goal, {{0.0, from}, {1.0, to}});
+  goal.facing_duration = 2.0;
+  goal.nominal_activation = {false, false, false, false, false, false, true, true};
+  goal.path_tolerance = {0.1, 0.1, 0.1, 0.1, 0.15, 0.01};
+  goal.goal_tolerance = {0.05, 0.05, 0.05, 0.05, 0.1, 0.003};
+  StpikOptions simulation;
+  simulation.dt = 0.02;
+  simulation.wall_timeout = 60;
+  PostureOptions posture;
+  NominalOptions options;
+  options.knot_dt = 0.2;
+  options.budget = 60;
+  // A free start is ignored: facing always starts at the measured posture.
+  const auto plan = optimize_nominal_trajectory(snapshot(), goal, simulation, posture, options,
+    [] {return false;}, {}, nullptr, true);
+  EXPECT_EQ(plan.validation.outcome, plan.validation.SUCCESS) << plan.validation.message;
+  ASSERT_GE(plan.knots.size(), 3u);
+  EXPECT_DOUBLE_EQ(plan.progress.front(), 0.0);
+  EXPECT_DOUBLE_EQ(plan.progress.back(), 1.0);
+  for (size_t k = 0; k < plan.knots.size(); ++k) {
+    EXPECT_LT(plan.knots[k].head<6>().norm(), 1e-12) << "base moved at knot " << k;
+    WholeBodyState s = state;
+    s.joint_positions = plan.knots[k].tail(2);
+    const auto left = backend->compute_frame_state(s, "left").pose;
+    const auto right = backend->compute_frame_state(s, "right").pose;
+    const auto rows = facing::evaluate(left, right, {}, {}, left_goal, right_goal,
+      facing::interpolate(from, to, plan.progress[k]), 0.02);
+    EXPECT_LT(std::abs(rows.error(5)), 0.0026) << "knot " << k;
+  }
+  EXPECT_NEAR(plan.knots.front()(6), 0.0, 1e-12);
+  EXPECT_NEAR(plan.knots.back()(6), 0.03, 0.003);
+  const auto check = StpikCheck::run(snapshot(), nominal_tracking_goal(goal, plan), simulation);
+  EXPECT_EQ(check.outcome, check.SUCCESS) << check.code << ": " << check.message;
+  EXPECT_NEAR(check.base_pose.position.x, 0.0, 1e-9);
+
+  // Planning does not depend on what is enabled nor on the nominal priority, and leaves
+  // the controller tasks as they were.
+  facing_task->set_enabled(false);
+  robot_nominal->set_enabled(false);
+  robot_nominal->set_priority(1);
+  std::rotate(tasks.begin(), tasks.end() - 1, tasks.end());
+  const auto original = tasks;
+  const auto inactive = optimize_nominal_trajectory(snapshot(), goal, simulation, posture, options,
+    [] {return false;}, {});
+  EXPECT_EQ(inactive.validation.outcome, inactive.validation.SUCCESS) << inactive.validation.message;
+  EXPECT_NEAR(inactive.knots.back()(6), 0.03, 0.003);
+  EXPECT_FALSE(facing_task->enabled());
+  EXPECT_FALSE(robot_nominal->enabled());
+  EXPECT_EQ(robot_nominal->priority(), 1u);
+  EXPECT_EQ(tasks, original);
 }
 
 TEST_F(NominalPlannerTest, CheckRejectsNominalWithoutRobotNominalTask)

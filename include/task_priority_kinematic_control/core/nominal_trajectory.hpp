@@ -45,7 +45,7 @@ struct NominalOptions
 
 struct NominalPlan
 {
-  std::vector<double> times;
+  std::vector<double> times, progress;
   std::vector<Eigen::VectorXd> knots;
   trajectory_msgs::msg::JointTrajectory joints;
   trajectory_msgs::msg::MultiDOFJointTrajectory base;

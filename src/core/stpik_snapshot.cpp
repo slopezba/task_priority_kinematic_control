@@ -266,7 +266,7 @@ void StpikTaskAccess::bind(TaskBase & task, const TaskContext & context)
   common->context_ = context;
 }
 
-std::string StpikTaskAccess::key(const TaskBase & task)
+std::string StpikTaskAccess::key(const TaskBase & task, bool streamed)
 {
   std::ostringstream out;
   out << std::setprecision(17);
@@ -278,17 +278,17 @@ std::string StpikTaskAccess::key(const TaskBase & task)
   // Roll/pitch control derives its display pose from measured position/yaw each
   // cycle. Its actual reference is tilt_target_, captured separately below.
   if (const auto * common = dynamic_cast<const TaskBaseCommon *>(&task);
-    common && !(frame && frame->roll_pitch_control_)) {
+    common && !streamed && !(frame && frame->roll_pitch_control_)) {
     append(out, common->has_pose_goal_); append(out, common->pose_goal_.header.frame_id);
     if (common->has_pose_goal_) {append(out, common->pose_goal_.pose);}
   }
   if (const auto * pose = dynamic_cast<const PoseTaskCommon *>(&task)) {
     std::scoped_lock lock(pose->feedforward_mutex_);
-    append(out, pose->feedforward_); append(out, pose->feedforward_epoch_);
+    if (!streamed) {append(out, pose->feedforward_); append(out, pose->feedforward_epoch_);}
     append(out, pose->accept_feedforward_); append(out, pose->auto_update_target_pose_);
     append(out, pose->feedforward_velocity_threshold_); append(out, pose->initialize_target_);
     append(out, pose->feedforward_timeout_);
-    if (pose->feedforward_.norm() > 0.0) {append(out, pose->feedforward_time_);}
+    if (!streamed && pose->feedforward_.norm() > 0.0) {append(out, pose->feedforward_time_);}
   }
   // Which point a pose task controls (tool or offset point) changes what the probe validated; the offset
   // value itself is not part of the key because it varies continuously with the measurement.
@@ -388,8 +388,11 @@ std::string StpikTaskAccess::key(const TaskBase & task)
     const auto & source = static_cast<const EndEffectorsFacingTask &>(task);
     append(out, source.left_frame_);
     append(out, source.right_frame_);
-    append(out, source.left_pointing_axis_.transpose());
-    append(out, source.right_pointing_axis_.transpose());
+    append(out, source.left_goal_.vector().transpose());
+    append(out, source.right_goal_.vector().transpose());
+    append(out, source.left_reference_axis_.transpose());
+    append(out, source.right_reference_axis_.transpose());
+    append(out, source.feedforward_timeout_);
     append(out, source.target_roll_);
     append(out, source.target_distance_);
     append(out, source.capture_roll_pending_);
@@ -401,12 +404,12 @@ std::string StpikTaskAccess::key(const TaskBase & task)
   if (typeid(task) == typeid(JointNominalTask)) {
     const auto & source = static_cast<const JointNominalTask &>(task);
     append(out, source.joint_names_);
-    append(out, source.target_);
+    if (!streamed) {append(out, source.target_);}
     append(out, source.gains_);
     append(out, source.joint_activation_);
-    append(out, source.feedforward_);
+    if (!streamed) {append(out, source.feedforward_);}
     append(out, source.command_timeout_);
-    if (source.feedforward_.norm() > 0.0) {append(out, source.command_time_);}
+    if (!streamed && source.feedforward_.norm() > 0.0) {append(out, source.command_time_);}
   }
   if (typeid(task) == typeid(RobotNominalTask)) {
     const auto & source = static_cast<const RobotNominalTask &>(task);
@@ -415,8 +418,8 @@ std::string StpikTaskAccess::key(const TaskBase & task)
     append(out, source.gains_);
     append(out, source.activation_);
     append(out, source.timeout_);
-    append(out, source.has_reference_);
-    if (source.has_reference_) {
+    if (!streamed) {append(out, source.has_reference_); append(out, source.reference_mask_);}
+    if (!streamed && source.has_reference_) {
       append(out, source.base_target_); append(out, source.base_rates_);
       append(out, source.joint_target_); append(out, source.joint_velocity_);
       append(out, source.reference_time_);
@@ -517,21 +520,31 @@ std::string StpikTaskAccess::key(const TaskBase & task)
   return out.str();
 }
 
+static bool streamed_task(const TaskBase & task, const std::string & pose,
+  const std::shared_ptr<RobotNominalTask> & nominal)
+{
+  return !pose.empty() && (task.id() == pose || (nominal && (&task == nominal.get() ||
+    std::find(nominal->sync_tasks().begin(), nominal->sync_tasks().end(), task.id()) != nominal->sync_tasks().end())));
+}
+
 std::string StpikTaskAccess::configuration(const WholeBodyModel & model,
-  const HierarchySolver & solver, const std::vector<std::shared_ptr<TaskBase>> & tasks)
+  const HierarchySolver & solver, const std::vector<std::shared_ptr<TaskBase>> & tasks,
+  const std::string & streamed_pose)
 {
   std::ostringstream out;
   append(out, model.world_frame()); append(out, model.base_frame());
   append(out, model.left_tip_frame()); append(out, model.right_tip_frame());
   append(out, model.all_joint_names()); append(out, model.active_base_dofs());
   append(out, solver.configuration_key());
-  for (const auto & task : tasks) {append(out, key(*task));}
+  const auto nominal = find_robot_nominal_task(tasks);
+  for (const auto & task : tasks) {append(out, key(*task, streamed_task(*task,streamed_pose,nominal)));}
   return out.str();
 }
 
 StpikSnapshot StpikTaskAccess::capture(const WholeBodyState & state,
   const std::shared_ptr<WholeBodyModel> & model, const KinematicsBackendPtr & backend,
-  const HierarchySolver & solver, const std::vector<std::shared_ptr<TaskBase>> & tasks)
+  const HierarchySolver & solver, const std::vector<std::shared_ptr<TaskBase>> & tasks,
+  const std::string & streamed_pose)
 {
   StpikSnapshot out;
   out.initial_state = state;
@@ -540,7 +553,8 @@ StpikSnapshot StpikTaskAccess::capture(const WholeBodyState & state,
   out.model = std::make_shared<WholeBodyModel>(*model);
   out.source_backend = backend.get();
   out.solver = solver;
-  out.configuration = configuration(*model, solver, tasks);
+  out.streamed_pose = streamed_pose;
+  out.configuration = configuration(*model, solver, tasks, streamed_pose);
   out.backend = backend->clone();
   if (!out.backend || out.backend.get() == backend.get()) {
     out.unavailable_reason = "Backend does not support an independent offline clone"; return out;
@@ -562,14 +576,31 @@ bool StpikTaskAccess::compatible(const StpikSnapshot & snapshot, const WholeBody
   std::string & reason)
 {
   if (snapshot.source_backend != backend) {reason = "Kinematics backend changed since validation"; return false;}
-  if (snapshot.configuration != configuration(model, solver, tasks)) {
+  if (snapshot.configuration != configuration(model, solver, tasks, snapshot.streamed_pose)) {
     reason = "Effective task hierarchy, targets, gains, safety latches or solver changed"; return false;
   }
+  if (!snapshot.streamed_pose.empty()) {
+    const auto offset = [&](const auto & list) -> std::optional<Eigen::Isometry3d> {
+      for (const auto & t : list) {
+        if (t->id() == snapshot.streamed_pose) {
+          auto pose = std::dynamic_pointer_cast<PoseTaskCommon>(t);
+          if (pose && pose->use_offset()) {return pose->active_offset();}
+          return Eigen::Isometry3d::Identity();
+        }
+      }
+      return {};
+    };
+    const auto before = offset(snapshot.tasks), now = offset(tasks);
+    if (!before || !now || (before->translation()-now->translation()).norm() > options.snapshot_position_tolerance ||
+      Eigen::AngleAxisd(before->rotation()*now->rotation().transpose()).angle() > options.snapshot_orientation_tolerance)
+    {reason = "Controlled-point offset stale or changed"; return false;}
+  }
+  const auto nominal = find_robot_nominal_task(tasks);
   // A finite external input lifetime cannot be shifted by time spent checking.
   // Once it has expired, a new snapshot simulates zero from the correct start.
   // Returning unavailable here avoids approving a simulation with an earlier expiry.
   for (const auto & task : tasks) {
-    if (!task->enabled()) {continue;}
+    if (!task->enabled() || streamed_task(*task,snapshot.streamed_pose,nominal)) {continue;}
     if (const auto * pose = dynamic_cast<const PoseTaskCommon *>(task.get())) {
       std::scoped_lock lock(pose->feedforward_mutex_);
       if (pose->feedforward_timeout_ > 0.0 && pose->feedforward_.norm() > 0.0 &&

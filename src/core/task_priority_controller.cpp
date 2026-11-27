@@ -1058,6 +1058,7 @@ void TaskPriorityController::configure_external_interfaces()
     [this](const std::string & task, std::string & message) {return task_manager_->allow_mutation(task, message);});
   task_joint_target_subs_.clear();
   task_facing_target_subs_.clear();
+  task_facing_reference_subs_.clear();
   task_joint_trajectory_subs_.clear();
   task_joint_trajectory_action_servers_.clear();
   task_state_pubs_.clear();
@@ -1090,6 +1091,25 @@ void TaskPriorityController::configure_external_interfaces()
           rclcpp::SystemDefaultsQoS(),
           joint_target_callback);
       } else if (std::dynamic_pointer_cast<EndEffectorsFacingTask>(task)) {
+        task_facing_reference_subs_[task_id] =
+          get_node()->create_subscription<sura_manipulation_actions::msg::FacingReference>(
+          "task_priority/tasks/" + task_id + "/facing_reference",
+          rclcpp::QoS(1).reliable(),
+          [this, task_id](const sura_manipulation_actions::msg::FacingReference::SharedPtr msg)
+          {
+            if (!msg) {
+              return;
+            }
+            std::string message;
+            std::scoped_lock lock(task_mutex_);
+            if (!task_manager_->set_task_facing_reference(task_id, *msg, message)) {
+              RCLCPP_WARN_THROTTLE(
+                get_node()->get_logger(), *get_node()->get_clock(), 1000,
+                "Rejected facing reference for task '%s': %s",
+                task_id.c_str(),
+                message.c_str());
+            }
+          });
         task_facing_target_subs_[task_id] = get_node()->create_subscription<msg::FacingTarget>(
           "task_priority/tasks/" + task_id + "/facing_target",
           rclcpp::SystemDefaultsQoS(),

@@ -2,6 +2,8 @@
 
 #include <Eigen/Eigenvalues>
 #include <Eigen/SVD>
+#include <Eigen/QR>
+#include <stdexcept>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -33,7 +35,7 @@ std::string HierarchySolver::configuration_key() const
 }
 
 WholeBodyCommand HierarchySolver::solve(const std::vector<TaskComputation> & tasks,
-  Diagnostic * diagnostic, double singular_value_tolerance) const
+  Diagnostic * diagnostic, double singular_value_tolerance, Prefix * prefix) const
 {
   WholeBodyCommand out;
   out.generalized_velocity = Eigen::VectorXd::Zero(dofs_);
@@ -47,6 +49,19 @@ WholeBodyCommand HierarchySolver::solve(const std::vector<TaskComputation> & tas
   size_t task_index = 0;
   for (const auto & task : tasks) {
     const size_t index = task_index++;
+    if (prefix && index == prefix->before_task) {
+      if (prefix->scales.size() != projector.rows() || !prefix->scales.allFinite() ||
+        (prefix->scales.array() <= 0).any()) {throw std::invalid_argument("Invalid tangent coordinate scales");}
+      prefix->particular = out.generalized_velocity;
+      Eigen::JacobiSVD<Eigen::MatrixXd> svd(projector, Eigen::ComputeFullU);
+      const Eigen::Index free = (svd.singularValues().array() > 0.5).count();
+      prefix->rank = dofs_ - free;
+      const Eigen::MatrixXd scaled = prefix->scales.cwiseInverse().asDiagonal() * svd.matrixU().leftCols(free);
+      prefix->basis.resize(projector.rows(), free);
+      if (free) {
+        prefix->basis = scaled.householderQr().householderQ() * Eigen::MatrixXd::Identity(projector.rows(), free);
+      }
+    }
     if (!task.active || task.jacobian.cols() != static_cast<Eigen::Index>(dofs_) ||
         task.desired_velocity.size() != task.jacobian.rows() || !task.jacobian.allFinite() ||
         !task.desired_velocity.allFinite())

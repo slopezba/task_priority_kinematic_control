@@ -23,8 +23,12 @@ public:
   TaskComputation update(const WholeBodyState & state, const KinematicsBackend & backend) override;
 
   // base: ZYX coordinates; base_rates: their time derivatives; joints in model order.
+  // mask: empty, or one flag per row (see RobotNominalReference.msg).
   bool set_reference(const Coordinates & base, const Coordinates & base_rates,
-    const Eigen::VectorXd & joints, const Eigen::VectorXd & joint_velocities, std::string & message);
+    const Eigen::VectorXd & joints, const Eigen::VectorXd & joint_velocities, std::string & message,
+    const std::vector<bool> & mask = {});
+  // True when the current reference commands no base row at all.
+  bool base_masked() const;
   bool set_reference(const sura_manipulation_actions::msg::RobotNominalReference & reference,
     std::string & message, bool zero_velocity = false);
   void clear_reference();
@@ -50,6 +54,7 @@ private:
   std::vector<std::string> sync_tasks_;
   Eigen::VectorXd gains_;
   std::vector<bool> activation_;
+  std::vector<bool> reference_mask_;
   Coordinates base_target_ = Coordinates::Zero();
   Coordinates base_rates_ = Coordinates::Zero();
   Eigen::VectorXd joint_target_;
@@ -66,7 +71,8 @@ private:
 bool apply_robot_nominal_reference(
   const std::vector<std::shared_ptr<TaskBase>> & tasks, RobotNominalTask & task,
   const RobotNominalTask::Coordinates & base, const RobotNominalTask::Coordinates & base_rates,
-  const Eigen::VectorXd & joints, const Eigen::VectorXd & joint_velocities, std::string & message);
+  const Eigen::VectorXd & joints, const Eigen::VectorXd & joint_velocities, std::string & message,
+  const std::vector<bool> & mask = {});
 bool apply_robot_nominal_reference(
   const std::vector<std::shared_ptr<TaskBase>> & tasks, RobotNominalTask & task,
   const sura_manipulation_actions::msg::RobotNominalReference & reference, std::string & message,

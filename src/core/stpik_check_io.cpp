@@ -1,13 +1,52 @@
 #include "task_priority_kinematic_control/core/stpik_check_io.hpp"
+#include "task_priority_kinematic_control/core/local_prediction.hpp"
+#include "task_priority_kinematic_control/tasks/end_effectors_facing_task.hpp"
+#include "task_priority_kinematic_control/tasks/robot_nominal_task.hpp"
 
 namespace task_priority_kinematic_control
 {
 bool StpikCheckIO::same_request(const StpikAction::Goal & a, const StpikAction::Goal & b)
 {
-  return a.trajectory == b.trajectory && a.samples == b.samples &&
+  return a.prediction == b.prediction && a.trajectory == b.trajectory && a.samples == b.samples &&
     a.nominal_joints == b.nominal_joints && a.nominal_base == b.nominal_base && a.task_id == b.task_id && a.tip_frame == b.tip_frame &&
     a.tolerance_orientation == b.tolerance_orientation && a.path_tolerance == b.path_tolerance &&
-    a.goal_tolerance == b.goal_tolerance && a.goal_time_tolerance == b.goal_time_tolerance;
+    a.goal_tolerance == b.goal_tolerance && a.goal_time_tolerance == b.goal_time_tolerance &&
+    a.facing_path == b.facing_path && a.nominal_progress == b.nominal_progress &&
+    a.nominal_activation == b.nominal_activation;
+}
+
+bool StpikCheckIO::facing_ready(
+  const std::vector<std::shared_ptr<TaskBase>> & tasks,
+  const FacingReadiness::Request & request, std::string & message)
+{
+  const auto find = [&tasks](const std::string & id) -> std::shared_ptr<TaskBase> {
+      for (const auto & task : tasks) {if (task->id() == id) {return task;}}
+      return nullptr;
+    };
+  const auto facing = std::dynamic_pointer_cast<EndEffectorsFacingTask>(find(request.facing_task));
+  if (!facing || !facing->enabled()) {
+    message = "Enable the EndEffectorsFacingTask '" + request.facing_task + "'"; return false;
+  }
+  if (facing->left_frame() != request.left_frame || facing->right_frame() != request.right_frame) {
+    message = "Facing task frames must be the planner left/right tool frames"; return false;
+  }
+  if (facing->min_distance() > request.min_distance + 1e-9) {
+    message = "Facing task min_distance exceeds the planner minimum distance"; return false;
+  }
+  const auto nominal = std::dynamic_pointer_cast<RobotNominalTask>(find(request.nominal_task));
+  if (!nominal || !nominal->enabled()) {
+    message = "Enable the RobotNominalTask '" + request.nominal_task + "'"; return false;
+  }
+  if (nominal->priority() <= facing->priority()) {
+    message = "'" + request.nominal_task + "' must have lower priority than '" + request.facing_task + "'";
+    return false;
+  }
+  for (const auto & id : request.disabled_tasks) {
+    const auto task = find(id);
+    if (task && task->enabled()) {message = "Disable task '" + id + "'"; return false;}
+  }
+  message = "Facing hierarchy is ready";
+  return true;
 }
 
 void StpikCheckIO::accept(const std::shared_ptr<Handle> & handle)
@@ -35,7 +74,7 @@ void StpikCheckIO::accept(const std::shared_ptr<Handle> & handle)
       complete(std::move(result)); return;
     }
     validated_snapshot_.reset(); validated_id_ = 0;
-    auto snapshot = capture_();
+    auto snapshot = capture_(request_.prediction.global_progress.empty() ? "" : request_.task_id);
     // Metadata is immutable; the worker receives owning copies of all mutable tasks/backend.
     snapshot_ = snapshot;
     progress_time_.store(0.0); progress_total_.store(1.0);
@@ -43,6 +82,9 @@ void StpikCheckIO::accept(const std::shared_ptr<Handle> & handle)
     const auto settings = settings_;
     worker_ = std::async(std::launch::async,
       [this, snapshot = std::move(snapshot), goal, settings]() mutable {
+        if (!goal.prediction.global_progress.empty()) {
+          return predict_local_segment(snapshot,goal,settings,[this]() {return cancel_.load();});
+        }
         return StpikCheck::run(std::move(snapshot), goal, settings,
           [this]() {return cancel_.load();}, [this](double time, double total) {
             progress_time_.store(time); progress_total_.store(total);
@@ -60,8 +102,12 @@ void StpikCheckIO::complete(StpikAction::Result result)
   if (response->outcome == StpikAction::Result::FAIL && !handle_->is_canceling()) {
     auto feedback = std::make_shared<StpikAction::Feedback>();
     feedback->time_from_start = response->time_from_start;
-    const double duration = request_.samples.empty() ?
+    double duration = request_.samples.empty() ?
       request_.trajectory.duration : request_.samples.back().time_from_start;
+    if (!request_.facing_path.points.empty() && !request_.nominal_joints.points.empty()) {
+      const auto & last = request_.nominal_joints.points.back().time_from_start;
+      duration = last.sec + 1e-9 * last.nanosec;
+    }
     const double total = duration + request_.goal_time_tolerance;
     feedback->progress = total > 0.0 ? std::clamp(response->time_from_start / total, 0.0, 1.0) : 1.0;
     feedback->message = response->code + ": " + response->message;
@@ -115,7 +161,7 @@ void StpikCheckIO::poll()
 void StpikCheckIO::stop()
 {
   cancel_.store(true);
-  timer_.reset(); server_.reset();
+  timer_.reset(); server_.reset(); facing_service_.reset();
   std::scoped_lock lock(mutex_);
   if (worker_.valid()) {
     worker_.wait();

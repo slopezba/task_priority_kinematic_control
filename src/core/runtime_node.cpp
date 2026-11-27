@@ -161,7 +161,8 @@ void RuntimeNode::declare_parameters()
   declare_if_missing<double>(*this, "joint_state_timeout", 0.5);
   navigator_timeout_ = get_parameter("navigator_timeout").as_double();
   joint_state_timeout_ = get_parameter("joint_state_timeout").as_double();
-  for (const auto & task_id : this->get_parameter("task_ids").as_string_array()) {
+  const auto configured_ids = this->get_parameter("task_ids").as_string_array();
+  for (const auto & task_id : configured_ids) {
     const std::string prefix = "tasks." + task_id + ".";
     declare_if_missing<std::string>(*this, prefix + "plugin", "");
     const bool stabilize_limits = this->get_parameter(prefix + "plugin").as_string() ==
@@ -431,6 +432,7 @@ void RuntimeNode::configure_subscribers()
   manual_task_io_.set_active(true);
   task_joint_target_subs_.clear();
   task_facing_target_subs_.clear();
+  task_facing_reference_subs_.clear();
   task_joint_trajectory_subs_.clear();
   task_joint_trajectory_action_servers_.clear();
   for (const auto & task : task_manager_->tasks()) {
@@ -461,6 +463,25 @@ void RuntimeNode::configure_subscribers()
           });
       } else if (std::dynamic_pointer_cast<EndEffectorsFacingTask>(task)) {
         const auto task_id = task->id();
+        task_facing_reference_subs_[task_id] =
+          this->create_subscription<sura_manipulation_actions::msg::FacingReference>(
+          "task_priority/tasks/" + task_id + "/facing_reference",
+          rclcpp::QoS(1).reliable(),
+          [this, task_id](const sura_manipulation_actions::msg::FacingReference::SharedPtr msg) {
+            if (!msg) {
+              return;
+            }
+
+            std::string message;
+            std::scoped_lock lock(task_mutex_);
+            if (!task_manager_->set_task_facing_reference(task_id, *msg, message)) {
+              RCLCPP_WARN_THROTTLE(
+                this->get_logger(), *this->get_clock(), 1000,
+                "Rejected facing reference for task '%s': %s",
+                task_id.c_str(),
+                message.c_str());
+            }
+          });
         task_facing_target_subs_[task_id] = this->create_subscription<msg::FacingTarget>(
           "task_priority/tasks/" + task_id + "/facing_target",
           10,

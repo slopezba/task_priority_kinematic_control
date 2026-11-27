@@ -12,16 +12,8 @@ namespace task_priority_kinematic_control
 namespace
 {
 
-constexpr double kPi = 3.14159265358979323846;
-constexpr double kPureAxisTolerance = 1e-3;
-constexpr double kAlignedEpsilon = 1e-9;
-// x^2 + y^2 of the roll atan2 equals |proj(b_left)|^2 * |proj(b_right)|^2.
-constexpr double kRollMinSquaredNorm = 1e-4;
-
-double wrap_angle(double angle)
-{
-  return std::atan2(std::sin(angle), std::cos(angle));
-}
+namespace facing = sura_manipulation_actions::facing;
+using facing::wrapAngle;
 
 std::vector<double> activation_values_from_parameters(
   const std::map<std::string, rclcpp::Parameter> & parameters)
@@ -63,57 +55,42 @@ Eigen::Vector3d vector_from_values(const std::vector<double> & values)
   return Eigen::Vector3d(values[0], values[1], values[2]);
 }
 
-// World-frame reference axis of an EE for the roll zero (cyclic: x->y, y->z, z->x).
-Eigen::Vector3d roll_reference_axis(const Eigen::Matrix3d & rotation, int index, double sign)
-{
-  return sign * rotation.col((index + 1) % 3);
-}
-
-struct RollGeometry
-{
-  bool valid = false;
-  double roll = 0.0;
-  double x = 0.0;
-  double y = 0.0;
-};
-
-RollGeometry roll_geometry(
-  const Eigen::Vector3d & d, const Eigen::Vector3d & b_left, const Eigen::Vector3d & b_right)
-{
-  RollGeometry out;
-  out.y = d.dot(b_left.cross(b_right));
-  out.x = b_left.dot(b_right) - d.dot(b_left) * d.dot(b_right);
-  out.valid = out.x * out.x + out.y * out.y > kRollMinSquaredNorm;
-  out.roll = out.valid ? std::atan2(out.y, out.x) : 0.0;
-  return out;
-}
-
 }  // namespace
 
 bool EndEffectorsFacingTask::pure_axis_index(
   const Eigen::Vector3d & axis, int & index, double & sign, std::string & message)
 {
-  if (!axis.allFinite()) {
-    message = "pointing axis must be finite";
-    return false;
-  }
-  Eigen::Index max_index = 0;
-  axis.cwiseAbs().maxCoeff(&max_index);
-  const double value = axis(max_index);
-  for (Eigen::Index i = 0; i < 3; ++i) {
-    const double expected = i == max_index ? 1.0 : 0.0;
-    if (std::abs(std::abs(axis(i)) - expected) > kPureAxisTolerance) {
-      std::ostringstream stream;
-      stream << "pointing axis [" << axis.transpose()
-             << "] must be a pure signed axis (+-x, +-y or +-z)";
-      message = stream.str();
-      return false;
-    }
-  }
-  index = static_cast<int>(max_index);
-  sign = value > 0.0 ? 1.0 : -1.0;
+  facing::PureAxis out;
+  if (!facing::pureAxis(axis, out, message)) {return false;}
+  index = out.index;
+  sign = out.sign;
   return true;
 }
+
+void EndEffectorsFacingTask::restore_goal_reference()
+{
+  left_reference_axis_ = left_goal_.vector();
+  right_reference_axis_ = right_goal_.vector();
+  feedforward_.setZero();
+}
+
+facing::Reference EndEffectorsFacingTask::reference() const
+{
+  facing::Reference out;
+  out.left_axis = left_reference_axis_;
+  out.right_axis = right_reference_axis_;
+  out.roll = target_roll_;
+  out.distance = target_distance_;
+  return out;
+}
+
+bool EndEffectorsFacingTask::set_enabled(bool enabled)
+{
+  feedforward_.setZero();
+  return TaskBaseCommon::set_enabled(enabled);
+}
+
+void EndEffectorsFacingTask::reset() {restore_goal_reference();}
 
 void EndEffectorsFacingTask::configure(
   const std::string & id,
@@ -140,20 +117,27 @@ void EndEffectorsFacingTask::configure(
     get_double_array_param(parameters, "left_pointing_axis", {0.0, 0.0, 1.0}));
   const Eigen::Vector3d right_axis = vector_from_values(
     get_double_array_param(parameters, "right_pointing_axis", {0.0, 0.0, 1.0}));
-  if (!pure_axis_index(left_axis, left_axis_index_, left_axis_sign_, message)) {
+  if (!facing::pureAxis(left_axis, left_goal_, message)) {
     throw std::invalid_argument("Task '" + id + "': left_pointing_axis: " + message);
   }
-  if (!pure_axis_index(right_axis, right_axis_index_, right_axis_sign_, message)) {
+  if (!facing::pureAxis(right_axis, right_goal_, message)) {
     throw std::invalid_argument("Task '" + id + "': right_pointing_axis: " + message);
   }
-  left_pointing_axis_ = left_axis_sign_ * Eigen::Vector3d::Unit(left_axis_index_);
-  right_pointing_axis_ = right_axis_sign_ * Eigen::Vector3d::Unit(right_axis_index_);
+  restore_goal_reference();
+  // The hosts declare feedforward_timeout = 0 for every task. A streamed facing
+  // feedforward always expires, so zero selects the default.
+  feedforward_timeout_ = get_double_param(parameters, "feedforward_timeout", 0.0);
+  if (!std::isfinite(feedforward_timeout_) || feedforward_timeout_ < 0.0) {
+    throw std::invalid_argument(
+            "Task '" + id + "': feedforward_timeout must be finite and non-negative");
+  }
+  if (feedforward_timeout_ == 0.0) {feedforward_timeout_ = 0.5;}
 
   capture_roll_pending_ = true;
   if (has_parameter(parameters, "roll_angle")) {
     const double roll = get_double_param(parameters, "roll_angle", 0.0);
     if (std::isfinite(roll)) {
-      target_roll_ = wrap_angle(roll);
+      target_roll_ = wrapAngle(roll);
       capture_roll_pending_ = false;
     }
   }
@@ -180,10 +164,10 @@ EndEffectorsFacingTask::Measurement EndEffectorsFacingTask::measure(
     return out;
   }
   const Eigen::Vector3d d = delta / out.distance;
-  const auto roll = roll_geometry(
+  const auto roll = facing::rollGeometry(
     d,
-    roll_reference_axis(left.pose.rotation(), left_axis_index_, left_axis_sign_),
-    roll_reference_axis(right.pose.rotation(), right_axis_index_, right_axis_sign_));
+    facing::rollReferenceAxis(left.pose.rotation(), left_goal_),
+    facing::rollReferenceAxis(right.pose.rotation(), right_goal_));
   out.roll_valid = roll.valid;
   out.roll = roll.roll;
   return out;
@@ -221,91 +205,34 @@ TaskComputation EndEffectorsFacingTask::update(
     computation.status_message = "ee too close";
     return computation;
   }
-  const Eigen::Vector3d d = delta / r;
-
-  const Eigen::MatrixXd left_linear = left.jacobian.topRows(3);
-  const Eigen::MatrixXd left_angular = left.jacobian.middleRows(3, 3);
-  const Eigen::MatrixXd right_linear = right.jacobian.topRows(3);
-  const Eigen::MatrixXd right_angular = right.jacobian.middleRows(3, 3);
-  const Eigen::MatrixXd relative_linear = right_linear - left_linear;
-  // d_dot = P (v_right - v_left), P = (I - d d^T) / r.
-  const Eigen::MatrixXd d_jacobian =
-    ((Eigen::Matrix3d::Identity() - d * d.transpose()) / r) * relative_linear;
-  // Angular velocity of the line direction: omega_d = d x d_dot.
-  const Eigen::MatrixXd line_angular = skew(d) * d_jacobian;
-
-  const Eigen::Matrix3d left_rotation = left.pose.rotation();
-  const Eigen::Matrix3d right_rotation = right.pose.rotation();
-
-  Eigen::Matrix<double, 6, 1> full_error = Eigen::Matrix<double, 6, 1>::Zero();
-  Eigen::MatrixXd full_jacobian = Eigen::MatrixXd::Zero(6, cols);
-
-  // Pointing rows: rotation vector that takes the EE axis a onto the line direction s,
-  // projected on the two other EE axes. Current-rate jacobian: u^T (omega_ee - omega_line).
-  const auto pointing_rows = [&](
-    const Eigen::Matrix3d & rotation, int index, double sign, const Eigen::Vector3d & s,
-    const Eigen::MatrixXd & angular, Eigen::Index row)
-    {
-      const Eigen::Vector3d a = sign * rotation.col(index);
-      const Eigen::Vector3d u1 = rotation.col((index + 1) % 3);
-      const Eigen::Vector3d u2 = rotation.col((index + 2) % 3);
-      const Eigen::Vector3d c = a.cross(s);
-      const double sin_angle = c.norm();
-      const double cos_angle = a.dot(s);
-      Eigen::Vector3d rotation_vector = Eigen::Vector3d::Zero();
-      if (sin_angle > kAlignedEpsilon) {
-        rotation_vector = std::atan2(sin_angle, cos_angle) * c / sin_angle;
-      } else if (cos_angle < 0.0) {
-        rotation_vector = kPi * u1;
-      }
-      full_error(row) = u1.dot(rotation_vector);
-      full_error(row + 1) = u2.dot(rotation_vector);
-      const Eigen::MatrixXd relative_angular = angular - line_angular;
-      full_jacobian.row(row) = u1.transpose() * relative_angular;
-      full_jacobian.row(row + 1) = u2.transpose() * relative_angular;
-    };
-  pointing_rows(left_rotation, left_axis_index_, left_axis_sign_, d, left_angular, 0);
-  pointing_rows(right_rotation, right_axis_index_, right_axis_sign_, -d, right_angular, 2);
-
-  // Roll row: phi = atan2(y, x), y = d.(bL x bR), x = bL.bR - (d.bL)(d.bR).
-  const Eigen::Vector3d b_left =
-    roll_reference_axis(left_rotation, left_axis_index_, left_axis_sign_);
-  const Eigen::Vector3d b_right =
-    roll_reference_axis(right_rotation, right_axis_index_, right_axis_sign_);
-  const auto roll = roll_geometry(d, b_left, b_right);
-  if (roll.valid) {
-    measured_roll_ = roll.roll;
+  auto rows_now = facing::evaluate(
+    left.pose, right.pose, left.jacobian, right.jacobian, left_goal_, right_goal_,
+    reference(), min_distance_);
+  if (rows_now.roll_valid) {
+    measured_roll_ = rows_now.roll;
     if (capture_roll_pending_) {
-      target_roll_ = roll.roll;
+      target_roll_ = rows_now.roll;
       capture_roll_pending_ = false;
+      rows_now.error(4) = 0.0;
+    } else {
+      rows_now.error(4) = wrapAngle(target_roll_ - rows_now.roll);
     }
-    const double alpha_left = d.dot(b_left);
-    const double alpha_right = d.dot(b_right);
-    const Eigen::Vector3d bl_x_br = b_left.cross(b_right);
-    const Eigen::RowVectorXd dy =
-      bl_x_br.transpose() * d_jacobian +
-      b_left.cross(b_right.cross(d)).transpose() * left_angular +
-      b_right.cross(d.cross(b_left)).transpose() * right_angular;
-    const Eigen::RowVectorXd dx =
-      -(alpha_right * b_left + alpha_left * b_right).transpose() * d_jacobian +
-      (bl_x_br - alpha_right * b_left.cross(d)).transpose() * left_angular +
-      (-bl_x_br - alpha_left * b_right.cross(d)).transpose() * right_angular;
-    const double denominator = roll.x * roll.x + roll.y * roll.y;
-    full_error(4) = capture_roll_pending_ ? 0.0 : wrap_angle(target_roll_ - roll.roll);
-    full_jacobian.row(4) = (roll.x * dy - roll.y * dx) / denominator;
   } else {
-    // Roll undefined while a reference axis is parallel to the line: hold, keep the main term.
-    full_error(4) = 0.0;
-    full_jacobian.row(4) = d.transpose() * (right_angular - left_angular);
+    rows_now.error(4) = 0.0;
   }
-
-  // Distance row.
   if (capture_distance_pending_) {
     target_distance_ = r;
     capture_distance_pending_ = false;
+    rows_now.error(5) = 0.0;
   }
-  full_error(5) = target_distance_ - r;
-  full_jacobian.row(5) = d.transpose() * relative_linear;
+  const Eigen::Matrix<double, 6, 1> full_error = rows_now.error;
+  const Eigen::MatrixXd & full_jacobian = rows_now.jacobian;
+  if (std::chrono::duration<double>(steady_now() - feedforward_time_).count() > feedforward_timeout_) {
+    feedforward_.setZero();
+  }
+  Eigen::Matrix<double, 6, 1> feedforward = feedforward_;
+  // An undefined roll is held, so it cannot take a feedforward either.
+  if (!rows_now.roll_valid) {feedforward(4) = 0.0;}
 
   std::vector<Eigen::Index> active_indices;
   active_indices.reserve(6);
@@ -322,19 +249,22 @@ TaskComputation EndEffectorsFacingTask::update(
 
   const auto rows = static_cast<Eigen::Index>(active_indices.size());
   computation.error = Eigen::VectorXd::Zero(rows);
+  computation.feedforward = Eigen::VectorXd::Zero(rows);
   computation.desired_velocity = Eigen::VectorXd::Zero(rows);
   computation.jacobian = Eigen::MatrixXd::Zero(rows, cols);
   for (Eigen::Index row = 0; row < rows; ++row) {
     const Eigen::Index source_row = active_indices[static_cast<size_t>(row)];
     computation.error(row) = full_error(source_row);
-    computation.desired_velocity(row) = gains_(source_row) * full_error(source_row);
+    computation.feedforward(row) = feedforward(source_row);
+    computation.desired_velocity(row) =
+      feedforward(source_row) + gains_(source_row) * full_error(source_row);
     computation.jacobian.row(row) = full_jacobian.row(source_row);
   }
 
   std::ostringstream status;
   status.setf(std::ios::fixed);
   status.precision(3);
-  status << "tracking roll=" << measured_roll_ << (roll.valid ? "" : "(undefined)")
+  status << "tracking roll=" << measured_roll_ << (rows_now.roll_valid ? "" : "(undefined)")
          << " distance=" << r;
   computation.status_message = status.str();
   return computation;
@@ -347,15 +277,12 @@ bool EndEffectorsFacingTask::set_facing_target(
     target.left_pointing_axis.x, target.left_pointing_axis.y, target.left_pointing_axis.z);
   const Eigen::Vector3d right_axis(
     target.right_pointing_axis.x, target.right_pointing_axis.y, target.right_pointing_axis.z);
-  int left_index = 0;
-  int right_index = 0;
-  double left_sign = 1.0;
-  double right_sign = 1.0;
-  if (!pure_axis_index(left_axis, left_index, left_sign, message)) {
+  facing::PureAxis left_goal, right_goal;
+  if (!facing::pureAxis(left_axis, left_goal, message)) {
     message = "left_pointing_axis: " + message;
     return false;
   }
-  if (!pure_axis_index(right_axis, right_index, right_sign, message)) {
+  if (!facing::pureAxis(right_axis, right_goal, message)) {
     message = "right_pointing_axis: " + message;
     return false;
   }
@@ -368,26 +295,74 @@ bool EndEffectorsFacingTask::set_facing_target(
     return false;
   }
 
-  left_axis_index_ = left_index;
-  right_axis_index_ = right_index;
-  left_axis_sign_ = left_sign;
-  right_axis_sign_ = right_sign;
-  left_pointing_axis_ = left_sign * Eigen::Vector3d::Unit(left_index);
-  right_pointing_axis_ = right_sign * Eigen::Vector3d::Unit(right_index);
+  left_goal_ = left_goal;
+  right_goal_ = right_goal;
+  restore_goal_reference();
   target_distance_ = target.distance;
   capture_distance_pending_ = false;
   if (std::isnan(target.roll_angle)) {
     capture_roll_pending_ = true;
   } else {
-    target_roll_ = wrap_angle(target.roll_angle);
+    target_roll_ = wrapAngle(target.roll_angle);
     capture_roll_pending_ = false;
   }
   message = "Facing target updated";
   return true;
 }
 
+bool EndEffectorsFacingTask::set_facing_reference(
+  const sura_manipulation_actions::msg::FacingReference & message_in, std::string & message)
+{
+  const auto vector = [](const geometry_msgs::msg::Vector3 & value) {
+      return Eigen::Vector3d(value.x, value.y, value.z);
+    };
+  facing::PureAxis left_goal, right_goal;
+  if (!facing::pureAxis(vector(message_in.left_goal_axis), left_goal, message) ||
+    !facing::pureAxis(vector(message_in.right_goal_axis), right_goal, message))
+  {return false;}
+  facing::Reference next;
+  next.left_axis = vector(message_in.left_pointing_axis);
+  next.right_axis = vector(message_in.right_pointing_axis);
+  next.roll = message_in.roll_angle;
+  next.distance = message_in.distance;
+  facing::ReferenceRate rate;
+  rate.left_axis = vector(message_in.left_pointing_rate);
+  rate.right_axis = vector(message_in.right_pointing_rate);
+  rate.roll = message_in.roll_rate;
+  rate.distance = message_in.distance_rate;
+  if (!next.left_axis.allFinite() || !next.right_axis.allFinite() ||
+    std::abs(next.left_axis.norm() - 1.0) > 1e-3 || std::abs(next.right_axis.norm() - 1.0) > 1e-3)
+  {
+    message = "reference pointing axes must be unit vectors";
+    return false;
+  }
+  if (!std::isfinite(next.roll) || !std::isfinite(next.distance) || next.distance <= 0.0 ||
+    !rate.left_axis.allFinite() || !rate.right_axis.allFinite() ||
+    !std::isfinite(rate.roll) || !std::isfinite(rate.distance))
+  {
+    message = "reference roll, distance and rates must be finite, with distance > 0";
+    return false;
+  }
+  next.left_axis.normalize();
+  next.right_axis.normalize();
+  left_goal_ = left_goal;
+  right_goal_ = right_goal;
+  left_reference_axis_ = next.left_axis;
+  right_reference_axis_ = next.right_axis;
+  target_roll_ = wrapAngle(next.roll);
+  target_distance_ = next.distance;
+  capture_roll_pending_ = false;
+  capture_distance_pending_ = false;
+  feedforward_ = enabled_ ?
+    facing::feedforwardRows(next, rate) : Eigen::Matrix<double, 6, 1>::Zero();
+  feedforward_time_ = steady_now();
+  message = "Facing reference updated";
+  return true;
+}
+
 void EndEffectorsFacingTask::capture_measured_target(const KinematicsBackend & backend)
 {
+  restore_goal_reference();
   const auto measured = measure(backend);
   if (measured.valid) {
     target_distance_ = measured.distance;
@@ -432,8 +407,8 @@ msg::TaskStatus EndEffectorsFacingTask::build_status() const
 std::vector<double> EndEffectorsFacingTask::current_target() const
 {
   return {
-    left_pointing_axis_.x(), left_pointing_axis_.y(), left_pointing_axis_.z(),
-    right_pointing_axis_.x(), right_pointing_axis_.y(), right_pointing_axis_.z(),
+    left_reference_axis_.x(), left_reference_axis_.y(), left_reference_axis_.z(),
+    right_reference_axis_.x(), right_reference_axis_.y(), right_reference_axis_.z(),
     target_roll_, target_distance_};
 }
 
